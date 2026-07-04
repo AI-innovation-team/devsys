@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>devsys · 内网门户</title>
+    <!-- 主题在渲染前定妥，避免闪烁 -->
+    <script>
+      (function () {
+        var t;
+        try { t = localStorage.getItem("devsys.theme"); } catch (e) {}
+        document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
