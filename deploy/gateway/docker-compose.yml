@@ -1,0 +1,21 @@
+# 网关上的 Caddy（唯一用 Docker 的组件）。network_mode host 直接绑 public_port。
+# admin off，只占 public_port，不碰宿主其它端口/服务。
+services:
+  caddy:
+    build:
+      context: ./caddy
+      args:
+        CADDY_DNS_MODULE: ${CADDY_DNS_MODULE:-github.com/caddy-dns/alidns}
+    image: devsys-caddy:latest
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - /etc/devsys/control-plane.env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
