@@ -1,0 +1,28 @@
+# ── 机密：绝不提交 ──
+.env
+**/.env
+.secrets
+
+# ── 依赖 / 构建产物 ──
+node_modules/
+**/node_modules/
+frontend/dist/
+dist/
+.vite/
+
+# ── Python ──
+__pycache__/
+**/__pycache__/
+*.pyc
+.venv/
+**/.venv/
+*.egg-info/
+
+# ── 运行期数据（用户凭据等，只存在于网关机，绝不入库）──
+**/data/
+*.enc
+portal.key
+
+# ── 杂项 ──
+.DS_Store
+*.log
