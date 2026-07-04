@@ -1,7 +1,0 @@
-# devsys 门户后端依赖（网关机 pip install --user，国内用清华源）
-fastapi>=0.110
-uvicorn[standard]>=0.29
-asyncssh>=2.14
-httpx>=0.27
-websockets>=12.0
-cryptography>=42.0

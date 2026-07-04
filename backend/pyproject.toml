@@ -1,0 +1,17 @@
+[project]
+name = "devsys-portal"
+version = "1.0.0"
+description = "devsys 内网门户后端（FastAPI，纯 JSON/WS API + 托管 SPA）"
+requires-python = ">=3.8"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "asyncssh>=2.14",
+    "httpx>=0.27",
+    "websockets>=12.0",
+    "cryptography>=42.0",
+]
+
+# 只装依赖到 .venv，不把本项目当作可构建包（源码目录 devsys_portal 直接可导入）。
+[tool.uv]
+package = false

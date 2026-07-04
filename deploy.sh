@@ -47,9 +47,9 @@ do_relay() {
 
 do_gateway() {
   log "gateway → $GW_SSH（后端 + 前端 + 配置 + 服务）"
-  ssh "$GW_SSH" 'mkdir -p ~/gateway ~/gateway/systemd ~/gateway/web'
-  # 代码与静态资源
-  scp -q -r backend "$GW_SSH:~/gateway/"
+  ssh "$GW_SSH" 'mkdir -p ~/gateway ~/gateway/systemd ~/gateway/web ~/gateway/backend'
+  # 后端（只发源码 + uv 清单，不发本地 .venv）
+  scp -q -r backend/devsys_portal backend/pyproject.toml backend/uv.lock "$GW_SSH:~/gateway/backend/"
   scp -q -r frontend/dist/. "$GW_SSH:~/gateway/web/"
   ssh "$GW_SSH" 'test -d ~/gateway/docs' || scp -q -r docs "$GW_SSH:~/gateway/docs"
   # 渲染出的配置

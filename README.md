@@ -40,9 +40,9 @@ deploy.sh              一键部署编排
 scripts/
   devsysconf.py        stdlib YAML 加载器
   render.py            config → 网关具体配置（Caddyfile/oauth2/servers.json/systemd）
-backend/               FastAPI 后端（模块化）
+backend/               FastAPI 后端（模块化，uv 管理）
   devsys_portal/       config crypto storage servers auth ssh tmux vscode docs + routes/
-  requirements.txt
+  pyproject.toml · uv.lock
 frontend/              Vite + React + TS（CIBOL 设计系统）
   src/  ds/tokens · screens · icons · api
 deploy/
@@ -79,12 +79,14 @@ vim config.yaml           # 填 domain / relay / gateway / servers / dns
 ## 本地开发
 
 ```bash
-# 后端
-cd backend && pip install -r requirements.txt
-DEVSYS_SERVERS=/path/servers.json uvicorn devsys_portal.main:app --port 8090
+# 后端（uv 管理虚拟环境，装依赖到 backend/.venv）
+cd backend && uv sync
+DEVSYS_SERVERS=/path/servers.json uv run uvicorn devsys_portal.main:app --port 8090
 # 前端（代理到 8090）
 cd frontend && npm install && npm run dev
 ```
+
+依赖用 [uv](https://docs.astral.sh/uv/) 管理（`pyproject.toml` + `uv.lock`）；网关部署时 `install.sh` 会自动装 uv 并 `uv sync`。
 
 ## 安全要点
 

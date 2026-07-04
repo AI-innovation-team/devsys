@@ -30,9 +30,17 @@ if [ ! -x oauth2/oauth2-proxy ]; then
   [ -x oauth2/oauth2-proxy ] || { echo "✗ oauth2-proxy 下载失败，请手动放到 oauth2/oauth2-proxy"; exit 1; }
 fi
 
-echo "▶ Python 依赖（--user，清华源）"
-python3 -m pip install --user -q -r backend/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple \
-  || python3 -m pip install --user -q -r backend/requirements.txt
+echo "▶ Python 环境（uv）"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+if ! command -v uv >/dev/null 2>&1; then
+  python3 -m pip install --user -q uv -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    || curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+fi
+( cd backend
+  export UV_PYTHON_DOWNLOADS=never                                  # 用系统 python，不下载解释器（网关脆弱/国内网络）
+  export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
+  uv sync --frozen 2>/dev/null || uv sync )                         # 按 uv.lock 建 .venv 装依赖
 
 echo "▶ 反向隧道密钥"
 sudo test -f /root/.ssh/relay_key || sudo ssh-keygen -t ed25519 -N '' -f /root/.ssh/relay_key -q
