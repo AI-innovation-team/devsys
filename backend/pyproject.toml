@@ -10,6 +10,7 @@ dependencies = [
     "httpx>=0.27",
     "websockets>=12.0",
     "cryptography>=42.0",
+    "bcrypt>=4.1",
 ]
 
 # 只装依赖到 .venv，不把本项目当作可构建包（源码目录 devsys_portal 直接可导入）。

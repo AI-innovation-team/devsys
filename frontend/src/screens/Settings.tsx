@@ -17,6 +17,8 @@ export function Settings({ me, reload, theme, setTheme }: Props) {
     <div className="wrap">
       <header className="page-head"><h1>设置</h1></header>
 
+      {me?.email_login && <AccountSection email={me.user} />}
+
       <section className="set-sec">
         <div className="set-h"><h2>连接凭据</h2></div>
         <div className="cards">{servers.map((s) => <CredCard key={s.name} s={s} reload={reload} />)}</div>
@@ -102,5 +104,48 @@ function CredCard({ s, reload }: { s: Server; reload: () => Promise<void> | void
         </div>
       </div>
     </article>
+  );
+}
+
+function AccountSection({ email }: { email: string }) {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    if (pw.length < 8) { setNote("密码至少 8 位"); return; }
+    if (pw !== pw2) { setNote("两次输入不一致"); return; }
+    setBusy(true);
+    setNote("修改中…");
+    try {
+      await api.changePassword(pw);
+      setNote("已修改 ✓（下次登录用新密码）");
+      setPw("");
+      setPw2("");
+    } catch {
+      setNote("修改失败");
+    }
+    setBusy(false);
+  };
+  return (
+    <section className="set-sec">
+      <div className="set-h"><h2>账户</h2></div>
+      <div className="card">
+        <div className="cfg-head">
+          <div className="srv-title"><Icon name="user" /><span className="srv-name" style={{ fontSize: 16 }}>{email}</span></div>
+          <span className="badge">邮箱登录</span>
+        </div>
+        <div className="cfg-body">
+          <div className="row2">
+            <div className="field"><label>新密码</label><div className="inp"><Icon name="lock" /><input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="至少 8 位" autoComplete="new-password" /></div></div>
+            <div className="field"><label>确认新密码</label><div className="inp"><Icon name="lock" /><input type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} placeholder="再输一次" autoComplete="new-password" /></div></div>
+          </div>
+          <div className="cred-foot">
+            <button className="btn primary sm" disabled={busy} onClick={save}><Icon name="save" />修改密码</button>
+            <span className="save-note">{note}</span>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }

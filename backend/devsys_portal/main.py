@@ -9,8 +9,8 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse
 
 from .config import WEB_DIR
-from .routes import (docs_routes, me, settings, terminal, vscode_routes,
-                     workspaces)
+from .routes import (docs_routes, me, password, settings, terminal,
+                     vscode_routes, workspaces)
 
 
 @asynccontextmanager
@@ -25,6 +25,7 @@ def create_app() -> FastAPI:
     # API
     app.include_router(me.router)
     app.include_router(settings.router)
+    app.include_router(password.router)
     app.include_router(workspaces.router)
     app.include_router(docs_routes.router)
     # web SSH / VS Code

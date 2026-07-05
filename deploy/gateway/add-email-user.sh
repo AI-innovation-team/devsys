@@ -16,7 +16,10 @@ fi
 email="${1:?用法: add-email-user.sh <email> [password]}"
 pw="${2:-}"
 [ -n "$pw" ] || pw=$(python3 -c 'import secrets;print(secrets.token_urlsafe(9))')
-hash=$(python3 -c 'import crypt,sys;print(crypt.crypt(sys.argv[1], crypt.mksalt(crypt.METHOD_BLOWFISH)))' "$pw")
+# bcrypt：优先用后端 venv（版本无关），退回系统 python crypt
+PY="$HOME/gateway/backend/.venv/bin/python"; [ -x "$PY" ] || PY=python3
+hash=$("$PY" -c 'import sys,bcrypt;print(bcrypt.hashpw(sys.argv[1].encode(),bcrypt.gensalt()).decode())' "$pw" 2>/dev/null) \
+  || hash=$(python3 -c 'import crypt,sys;print(crypt.crypt(sys.argv[1],crypt.mksalt(crypt.METHOD_BLOWFISH)))' "$pw")
 
 awk -F: -v e="$email" '$1!=e' "$HT" > "$HT.tmp"       # 去掉同邮箱旧行
 echo "${email}:${hash}" >> "$HT.tmp"

@@ -146,6 +146,7 @@ Environment=DEVSYS_DATA={home}/gateway/data
 Environment=DEVSYS_SERVERS=/etc/devsys/servers.json
 Environment=DEVSYS_WEB={home}/gateway/web
 Environment=DEVSYS_DOCS={home}/gateway/docs
+Environment=DEVSYS_HTPASSWD={home}/gateway/oauth2/htpasswd
 WorkingDirectory={home}/gateway/backend
 ExecStart={home}/gateway/backend/.venv/bin/python -m uvicorn devsys_portal.main:app --host 127.0.0.1 --port 8090
 Restart=always

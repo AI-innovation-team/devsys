@@ -12,3 +12,7 @@ SERVERS_FILE = Path(os.environ.get("DEVSYS_SERVERS", "/etc/devsys/servers.json")
 DOCS = Path(os.environ.get("DEVSYS_DOCS", BASE.parent.parent / "docs"))
 # 构建好的前端（Vite dist）。deploy 会把 frontend/dist 放到这里
 WEB_DIR = Path(os.environ.get("DEVSYS_WEB", BASE.parent.parent / "frontend" / "dist"))
+# 邮箱登录用户表（oauth2-proxy htpasswd）——门户自助改密用
+HTPASSWD = Path(os.environ.get("DEVSYS_HTPASSWD", BASE.parent.parent / "oauth2" / "htpasswd"))
+# 改密后重启的 oauth2 服务名（需 zzl-zgh 免密 sudo restart，见 deploy/gateway/sudoers）
+OAUTH2_SERVICE = os.environ.get("DEVSYS_OAUTH2_SERVICE", "devsys-oauth2")

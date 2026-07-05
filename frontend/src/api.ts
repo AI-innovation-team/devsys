@@ -11,6 +11,7 @@ export interface Server {
 }
 export interface Me {
   user: string;
+  email_login: boolean;
   servers: Server[];
 }
 export interface WsSession {
@@ -56,6 +57,7 @@ export interface SettingsBody {
 export const api = {
   me: () => j<Me>("/api/me"),
   saveSettings: (b: SettingsBody) => j<{ ok: boolean; has_secret: boolean }>("/api/settings", post(b)),
+  changePassword: (password: string) => j<{ ok: boolean }>("/api/password", post({ password })),
   workspaces: () => j<{ servers: WsServer[] }>("/api/workspaces"),
   newWs: (server: string, name: string) => j<{ ok: boolean }>("/api/workspaces/new", post({ server, name })),
   killWs: (server: string, name: string) => j<{ ok: boolean }>("/api/workspaces/kill", post({ server, name })),
