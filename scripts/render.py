@@ -139,7 +139,7 @@ Wants=network-online.target
 [Service]
 User={gw['user']}
 Environment=HOME={home}
-Environment=DEVSYS_DATA={home}/gateway/portal/data
+Environment=DEVSYS_DATA={home}/gateway/data
 Environment=DEVSYS_SERVERS=/etc/devsys/servers.json
 Environment=DEVSYS_WEB={home}/gateway/web
 Environment=DEVSYS_DOCS={home}/gateway/docs
