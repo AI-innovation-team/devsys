@@ -19,8 +19,11 @@ export function Workspaces({ goSettings }: { goSettings: () => void }) {
   const [newSrv, setNewSrv] = useState("");
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [armed, setArmed] = useState<string | null>(null);
   const timer = useRef<number>();
+  const nameRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (adding) nameRef.current?.focus(); }, [adding]);
 
   const load = useCallback(async () => {
     try { setData((await api.workspaces()).servers); } catch { setData([]); }
@@ -41,6 +44,7 @@ export function Workspaces({ goSettings }: { goSettings: () => void }) {
       await api.newWs(newSrv, name);
       window.open(`/terminal/${encodeURIComponent(newSrv)}?ws=${encodeURIComponent(name)}`, "_blank");
       setNewName("");
+      setAdding(false);
       await load();
     } catch { /* ignore */ }
     setBusy(false);
@@ -69,21 +73,26 @@ export function Workspaces({ goSettings }: { goSettings: () => void }) {
       <header className="page-head">
         <div className="ph-row">
           <h1>工作区</h1>
-          <button className="btn subtle sm" onClick={load} title="刷新"><Icon name="refresh" /></button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn subtle sm" onClick={load} title="刷新"><Icon name="refresh" /></button>
+            <button className={"btn sm " + (adding ? "subtle" : "primary")} onClick={() => setAdding((a) => !a)} title="新建工作区"><Icon name="plus" /></button>
+          </div>
         </div>
       </header>
 
-      <div className="ws-new-bar">
-        {cfg.length ? (
-          <div className="ws-new">
-            <div className="inp sel"><Icon name="server" /><select value={newSrv} onChange={(e) => setNewSrv(e.target.value)}>{cfg.map((s) => <option key={s.server} value={s.server}>{s.server}</option>)}</select></div>
-            <input value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} placeholder="名称" maxLength={64} />
-            <button className="btn primary sm" disabled={busy} onClick={create}><Icon name="plus" />新建</button>
-          </div>
-        ) : (
-          <span className="nb-label" style={{ color: "var(--text-muted)", fontWeight: 500 }}>无可用服务器 · <a onClick={goSettings}>去设置</a></span>
-        )}
-      </div>
+      {adding && (
+        <div className="ws-new-bar">
+          {cfg.length ? (
+            <div className="ws-new">
+              <div className="inp sel"><Icon name="server" /><select value={newSrv} onChange={(e) => setNewSrv(e.target.value)}>{cfg.map((s) => <option key={s.server} value={s.server}>{s.server}</option>)}</select></div>
+              <input ref={nameRef} value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") create(); if (e.key === "Escape") setAdding(false); }} placeholder="名称" maxLength={64} />
+              <button className="btn primary sm" disabled={busy} onClick={create}>新建</button>
+            </div>
+          ) : (
+            <span className="nb-label" style={{ color: "var(--text-muted)", fontWeight: 500 }}>无可用服务器 · <a onClick={goSettings}>去设置</a></span>
+          )}
+        </div>
+      )}
 
       {!data ? null : (
         <>
