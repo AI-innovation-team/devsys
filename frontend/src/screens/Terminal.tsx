@@ -24,7 +24,8 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
     if (!mount.current) return;
     const term = new XTerm({
       fontSize: 13.5, scrollback: 5000,
-      fontFamily: '"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace',
+      // Symbols 在前（自托管，只含 PUA 图标）；其余按用户本地 Nerd Font → JetBrains Mono → 系统等宽回退。
+      fontFamily: '"Symbols Nerd Font Mono", "JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
       cursorBlink: true,
       theme: { background: "#1a1b1e", foreground: "#e6e6e6", cursor: "#7FB069", selectionBackground: "rgba(127,176,105,.28)" },
     });

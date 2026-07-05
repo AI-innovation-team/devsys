@@ -14,6 +14,17 @@ mkdir -p ~/.devsys
 PF=~/.devsys/cs.$H.port
 if [ -f "$PF" ]; then P=$(cat "$PF"); curl -sf "http://127.0.0.1:$P/healthz" >/dev/null 2>&1 && { echo "$P"; exit 0; }; fi
 command -v code-server >/dev/null || { echo NO_CODESERVER; exit 0; }
+# 终端 Nerd Font（首次生成，不覆盖用户已有设置）。code-server 用浏览器本地字体渲染，
+# 故需用户本机装有 Nerd Font；下方按 本地Nerd → 系统等宽 回退。
+UD=~/.devsys/cs-data-$H
+mkdir -p "$UD/User"
+if [ ! -f "$UD/User/settings.json" ]; then
+cat > "$UD/User/settings.json" <<'JSON'
+{
+  "terminal.integrated.fontFamily": "'JetBrainsMono Nerd Font Mono', 'Symbols Nerd Font Mono', 'JetBrains Mono', monospace"
+}
+JSON
+fi
 P=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
 setsid code-server --bind-addr 127.0.0.1:$P --auth none --disable-telemetry \
   --disable-update-check --user-data-dir ~/.devsys/cs-data-$H >~/.devsys/cs.$H.log 2>&1 &

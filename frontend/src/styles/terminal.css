@@ -1,4 +1,15 @@
 /* 独立整页终端布局。深色终端卡（CIBOL Server 屏风格），外框跟随主题。 */
+
+/* Nerd Font 图标（仅覆盖私有区 PUA），自托管——与正文等宽字体组合，
+   powerline / nerd 图标全员可显，不依赖用户本地是否装了 Nerd Font。 */
+@font-face {
+  font-family: "Symbols Nerd Font Mono";
+  src: url("/fonts/SymbolsNerdFontMono-Regular.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+
 html, body, #root { height: 100%; }
 .tpage { display: flex; flex-direction: column; height: 100vh; background: var(--canvas); }
 .tbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 11px 18px; background: var(--surface); border-bottom: 1px solid var(--border-subtle); }
