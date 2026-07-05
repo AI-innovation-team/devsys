@@ -74,6 +74,9 @@ vim config.yaml .env
 - DNS：`config.yaml` 的 `dns.provider` 内置 `alidns/cloudflare/dnspod`；凭据填 `.env`。
   其它服务商在 `scripts/render.py` 的 `DNS_BLOCKS` 加一个 Caddy `dns` 块即可。
 - 登录白名单：`config.yaml` 的 `oauth.github_users`。
+- 邮箱登录（国内更稳，与 GitHub 并存）：`config.yaml` 的 `oauth.email_login: true`，
+  在网关上用 `bash ~/gateway/add-email-user.sh <email> [密码]` 加账号（bcrypt，至少一个才生效）。
+  删除：`add-email-user.sh --del <email>`。
 
 ### 目标机准备（VS Code 需要）
 

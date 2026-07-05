@@ -109,6 +109,9 @@ def main(build_dir: str):
 
     # ── oauth2-proxy.cfg ──
     users = ", ".join(f'"{u}"' for u in cfg["oauth"].get("github_users", []))
+    # 邮箱登录（htpasswd）：oauth2-proxy 拒绝空 htpasswd，install.sh 会在无用户时自动摘除。
+    htpasswd_cfg = (f'htpasswd_file = "{home}/gateway/oauth2/htpasswd"\ndisplay_htpasswd_form = true\n'
+                    if cfg["oauth"].get("email_login") else "")
     (out / "oauth2-proxy.cfg").write_text(f"""provider = "github"
 client_id = "{env.get('OAUTH_CLIENT_ID', '')}"
 client_secret = "{env.get('OAUTH_CLIENT_SECRET', '')}"
@@ -123,7 +126,7 @@ email_domains = ["*"]
 github_users = [ {users} ]
 set_xauthrequest = true
 custom_templates_dir = "{home}/gateway/oauth2/templates"
-""")
+{htpasswd_cfg}""")
 
     # ── servers.json ──
     servers = [{"name": s["name"], "host": s["host"], "port": int(s.get("port", 22)),

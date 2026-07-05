@@ -20,9 +20,12 @@ dns:
 
 # ── 登录：GitHub OAuth，申请制白名单 ──
 # client_id / client_secret 放 .env；这里只列非机密的白名单 GitHub 用户名。
+# email_login: 额外开启邮箱+密码登录（国内更稳）。开启后用网关上的
+#   add-email-user.sh 添加账号；至少加一个后才会真正生效（oauth2 不接受空表）。
 oauth:
   provider: github
   github_users: [your-gh-username]
+  email_login: true
 
 # ── 公网中继（任意公网服务器）──
 # ssh:  部署用 SSH 目标（~/.ssh/config 别名，或 user@host）

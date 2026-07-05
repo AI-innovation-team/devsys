@@ -8,9 +8,10 @@ from fastapi import Header, HTTPException
 
 
 def check_user(u: Optional[str]) -> str:
+    # 身份可能是 GitHub 用户名或邮箱（htpasswd 登录）。用作数据目录名，需挡路径穿越。
     if not u:
         raise HTTPException(401, "未认证（缺少 X-Auth-Request-User）")
-    if not all(c.isalnum() or c in "-_" for c in u):
+    if ".." in u or u.startswith(".") or "/" in u or not all(c.isalnum() or c in "-_.@+" for c in u):
         raise HTTPException(400, "bad user")
     return u
 

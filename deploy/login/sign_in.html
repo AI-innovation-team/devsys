@@ -45,16 +45,23 @@ body{margin:0;font-family:var(--font-sans);color:var(--text-body);background:var
 @keyframes rise{to{opacity:1;transform:none}}
 .name{font-family:var(--font-serif);font-size:31px;font-weight:600;color:var(--text-strong);letter-spacing:.05em}
 .sub{font-size:12.5px;color:var(--text-faint);letter-spacing:.14em;margin-top:6px}
-.msg{margin:22px 0 0;font-size:13px;color:var(--text-faint);text-align:center;line-height:1.6;max-width:300px}
-.cta{margin-top:30px;width:100%;height:48px;display:inline-flex;align-items:center;justify-content:center;gap:9px;
-  font-family:var(--font-sans);font-size:15px;font-weight:600;color:var(--cream);background:var(--stone-900);
-  border:none;border-radius:12px;cursor:pointer;letter-spacing:.01em;
+.stack{width:100%;margin-top:30px;display:flex;flex-direction:column;gap:10px}
+.fld{width:100%;height:46px;padding:0 14px;font-family:var(--font-sans);font-size:15px;color:var(--text-strong);
+  background:var(--surface);border:1px solid var(--border);border-radius:12px;outline:none;transition:border-color .15s,box-shadow .15s}
+.fld:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
+.cta{width:100%;height:48px;display:inline-flex;align-items:center;justify-content:center;gap:9px;
+  font-family:var(--font-sans);font-size:15px;font-weight:600;border:none;border-radius:12px;cursor:pointer;letter-spacing:.01em;
   transition:transform var(--ease-out) .12s,box-shadow .2s var(--ease-out),background .12s}
-.cta:hover{transform:translateY(-1px);box-shadow:0 10px 26px -10px rgba(42,42,40,.5)}
+.cta:hover{transform:translateY(-1px)}
 .cta:active{transform:translateY(0)}
 .cta svg{width:19px;height:19px}
-form{width:100%;margin:0}
-.foot{margin-top:26px;font-size:12px;color:var(--text-faint);text-align:center}
+.cta-accent{background:var(--accent);color:#fff;box-shadow:0 8px 22px -10px var(--accent)}
+.cta-accent:hover{background:var(--accent-hover)}
+.cta-stone{background:var(--stone-900);color:var(--cream);box-shadow:0 8px 22px -12px rgba(42,42,40,.5)}
+form{width:100%;margin:0;display:flex;flex-direction:column;gap:10px}
+.or{display:flex;align-items:center;gap:12px;color:var(--text-faint);font-size:12px;margin:4px 0}
+.or::before,.or::after{content:"";flex:1;height:1px;background:var(--border)}
+.foot{margin-top:24px;font-size:12px;color:var(--text-faint);text-align:center;line-height:1.6}
 @media (prefers-reduced-motion:reduce){
   .net,.net g,.net .edge,.net .node,.tile,.tile .arc,.tile .dot,.rise{animation:none!important}
   .net{opacity:1}.tile{opacity:1;transform:none}.tile .arc{stroke-dashoffset:0}.tile .dot{opacity:1}.rise{opacity:1;transform:none}
@@ -77,23 +84,32 @@ form{width:100%;margin:0}
       <div class="name">devsys</div>
       <div class="sub">内网开发者门户</div>
     </div>
-    <p class="msg rise" style="animation-delay:.6s">{{ if .SignInMessage }}{{ .SignInMessage }}{{ else }}使用你的 GitHub 账号登录 · 申请制访问{{ end }}</p>
-    <div class="rise" style="animation-delay:.68s;width:100%">
+
+    <div class="stack rise" style="animation-delay:.64s">
+      {{ if .SignInMessage }}<p style="margin:0 0 4px;font-size:13px;color:var(--text-faint);text-align:center">{{ .SignInMessage }}</p>{{ end }}
+      {{ if .CustomLogin }}
+      <form method="POST" action="{{.ProxyPrefix}}/sign_in">
+        <input type="hidden" name="rd" value="{{.Redirect}}">
+        <input class="fld" name="username" type="email" placeholder="邮箱" autocomplete="username" required>
+        <input class="fld" name="password" type="password" placeholder="密码" autocomplete="current-password" required>
+        <button type="submit" class="cta cta-accent">邮箱登录</button>
+      </form>
+      <div class="or">或</div>
+      {{ end }}
       <form method="GET" action="{{.ProxyPrefix}}/start">
         <input type="hidden" name="rd" value="{{.Redirect}}">
-        <button type="submit" class="cta">
-          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1-.7.1-.7.1-.7 1.2 0 1.9 1.2 1.9 1.2 1 1.8 2.8 1.3 3.5 1 0-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.2.5-2.3 1.3-3.1-.2-.4-.6-1.6 0-3.2 0 0 1-.3 3.4 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.6.2 2.8 0 3.2.9.8 1.3 1.9 1.3 3.2 0 4.6-2.8 5.6-5.5 5.9.5.4.9 1 .9 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3Z"/></svg>
+        <button type="submit" class="cta cta-stone">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1-.7.1-.7.1-.7 1.2 0 1.9 1.2 1.9 1.2 1 1.8 2.8 1.3 3.5 1 0-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.2.5-2.3 1.3-3.1-.2-.4-.6-1.6 0-3.2 0 0 1 0 3 1.5 2.64-.5 5.36-.5 8 0 2-1.5 3-1.5 3-1.5.6 1.6.2 2.8 0 3.2.9.8 1.3 1.9 1.3 3.1 0 4.7-2.8 5.7-5.5 6 .4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3Z"/></svg>
           使用 GitHub 登录
         </button>
       </form>
     </div>
-    <p class="foot rise" style="animation-delay:.82s">需要访问权限？联系管理员将你的 GitHub 用户名加入白名单</p>
+
+    <p class="foot rise" style="animation-delay:.82s">申请制访问 · 需要账号请联系管理员</p>
   </div>
 </div>
 <script>
-// 神经星座（呼应品牌弧线）
 (function(){
-  if(matchMedia('(prefers-reduced-motion: reduce)').matches){}
   var N=[[50,18],[69,24],[78,41],[74,60],[60,72],[42,74],[27,63],[22,44],[30,27],[44,36],[58,44],[50,56],[86,33],[16,55],[64,12],[38,88]];
   var E=[[0,1],[1,2],[2,3],[3,4],[4,5],[5,6],[6,7],[7,8],[8,0],[9,10],[10,11],[9,0],[11,4],[2,12],[7,13],[0,14],[5,15]];
   var g=document.getElementById('netg'),NS='http://www.w3.org/2000/svg';

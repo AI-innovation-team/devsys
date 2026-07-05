@@ -14,6 +14,13 @@ echo "▶ oauth2-proxy 配置 + 登录模板"
 mkdir -p oauth2/templates
 cp oauth2-proxy.cfg oauth2/oauth2-proxy.cfg
 [ -f sign_in.html ] && cp sign_in.html oauth2/templates/sign_in.html || true
+[ -f error.html ] && cp error.html oauth2/templates/error.html || true
+[ -f oauth2/htpasswd ] || touch oauth2/htpasswd    # 邮箱登录用户表（用 add-email-user.sh 维护）
+# oauth2-proxy 拒绝空 htpasswd：没有有效用户时先摘除，避免崩溃（加了用户会自动重新启用）
+if ! grep -qE "^[^#]+:" oauth2/htpasswd 2>/dev/null; then
+  sed -i "/^htpasswd_file/d; /^display_htpasswd_form/d" oauth2/oauth2-proxy.cfg
+  echo "  （htpasswd 暂无用户，未启用邮箱登录；bash add-email-user.sh <email> 添加后自动启用）"
+fi
 
 if [ ! -x oauth2/oauth2-proxy ]; then
   echo "▶ 下载 oauth2-proxy"

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录未成功 · devsys</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Source+Sans+3:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap');
+:root{
+  --font-sans:"Source Sans 3","Noto Sans SC",-apple-system,system-ui,sans-serif;
+  --font-serif:"Source Serif 4","Noto Sans SC",Georgia,serif;
+  --stone-900:#2A2A28;--cream:#F5F3EE;--paper:#FBFAF6;
+  --terracotta-500:#BD5D3A;--terracotta-600:#A54E2F;
+  --canvas:var(--paper);--text-strong:#2A2A28;--text-body:#38352F;--text-faint:#837B6F;
+  --border:#DBD4C6;--surface:#FBFAF6;--accent:var(--terracotta-500);--accent-hover:var(--terracotta-600);
+  --ease-out:cubic-bezier(.22,.61,.36,1);--ease-spring:cubic-bezier(.34,1.46,.58,1);color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --canvas:#232220;--text-strong:#F2EEE4;--text-body:#DED8CB;--text-faint:#837B6F;
+  --border:#46423C;--surface:#2C2A26;--stone-900:#F5F3EE;--cream:#2A2A28;--accent:#CE7B50;--accent-hover:#DC9B77;color-scheme:dark;
+}}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;font-family:var(--font-sans);color:var(--text-body);background:var(--canvas);-webkit-font-smoothing:antialiased}
+.wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:32px}
+.card{width:100%;max-width:380px;display:flex;flex-direction:column;align-items:center;text-align:center}
+.tile{width:58px;height:58px;border-radius:16px;margin-bottom:20px;display:inline-flex;align-items:center;justify-content:center;
+  background:var(--stone-900);color:var(--cream);box-shadow:0 10px 30px -12px rgba(42,42,40,.55)}
+.tile svg{width:26px;height:26px}
+h1{font-family:var(--font-serif);font-size:28px;font-weight:600;color:var(--text-strong);margin:0}
+.msg{margin:14px 0 0;font-size:14.5px;color:var(--text-body);line-height:1.7}
+.hint{margin:10px 0 0;font-size:13px;color:var(--text-faint);line-height:1.6}
+.code{margin-top:8px;font-size:12px;color:var(--text-faint);font-variant-numeric:tabular-nums}
+.cta{margin-top:26px;height:46px;padding:0 26px;display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  font-family:var(--font-sans);font-size:15px;font-weight:600;color:#fff;background:var(--accent);border:none;border-radius:12px;
+  cursor:pointer;text-decoration:none;box-shadow:0 8px 22px -10px var(--accent);transition:background .12s,transform var(--ease-out) .12s}
+.cta:hover{background:var(--accent-hover);transform:translateY(-1px)}
+</style></head>
+<body>
+<div class="wrap"><div class="card">
+  <span class="tile">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+  </span>
+  <h1>登录未成功</h1>
+  <p class="msg">你的账号可能<strong>未获授权</strong> —— 本门户为申请制访问。</p>
+  <p class="hint">如果你应当有权限，请把你的 <b>GitHub 用户名</b> 或 <b>邮箱</b> 发给管理员申请加入；也可以换个账号重试。</p>
+  {{ if .StatusCode }}<div class="code">错误 {{ .StatusCode }}{{ if .Message }} · {{ .Message }}{{ end }}</div>{{ end }}
+  <a class="cta" href="{{ .ProxyPrefix }}/sign_in">返回登录</a>
+</div></div>
+</body></html>
