@@ -58,8 +58,8 @@ do_gateway() {
   scp -q build/gateway/systemd/*.service "$GW_SSH:~/gateway/systemd/"
   # 部署静态件
   scp -q -r deploy/gateway/caddy "$GW_SSH:~/gateway/"
-  scp -q deploy/gateway/docker-compose.yml deploy/gateway/install.sh "$GW_SSH:~/gateway/"
-  scp -q deploy/login/sign_in.html "$GW_SSH:~/gateway/sign_in.html"
+  scp -q deploy/gateway/docker-compose.yml deploy/gateway/install.sh deploy/gateway/add-email-user.sh "$GW_SSH:~/gateway/"
+  scp -q deploy/login/sign_in.html deploy/login/error.html "$GW_SSH:~/gateway/"
   # 安装
   ssh "$GW_SSH" 'cd ~/gateway && bash install.sh'
   # 登记隧道公钥到 relay
