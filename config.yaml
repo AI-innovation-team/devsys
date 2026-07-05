@@ -1,48 +1,49 @@
-# devsys 部署拓扑（非机密，可提交）。密钥放 .env。
-# 改这里 + .env，然后 ./deploy.sh 一步到位。
+# devsys 部署拓扑（非机密，可提交）。机密放 .env。
+# 改这里 + .env，然后 ./deploy.sh 一键部署。
+# 架构：用户 → relay(公网,纯转发) → 反向隧道 → gateway(内网,跑门户) → 各内网 server。
 
 # ── 对外访问 ──
-domain: coder.psyagent.top      # 用户访问域名（A 记录需指向 relay 的公网 IP）
-public_port: 8443               # 对外端口（备案后可改 443）
-acme_email: guohao2045@gmail.com
+domain: coder.psyagent.top          # 用户访问域名（A 记录指向 relay 公网 IP）
+public_port: 8443                   # 对外端口（备案后可改 443）
+acme_email: guohao2045@gmail.com    # Let's Encrypt 通知邮箱
 
-# 控制面容器访问外网用的代理（如本机 mihomo/clash）。留空则容器直连。
-# 容器内的 127.0.0.1 不是宿主，所以用 host.docker.internal 指向宿主网关。
-# Caddy 签 Let's Encrypt 证书需要它（除非该机直连国际网络正常）。
+# Caddy 容器访问外网用的代理（签证书需要）。留空=直连。
 container_proxy: http://host.docker.internal:7890
 
-# 内网节点(provisioner/agent)如何解析「域名」直连控制面，绕开公网 hairpin：
-#   host-gateway = 节点与控制面在同一台机器（如 turing 既是控制面又是节点）
-#   或填控制面的内网 LAN IP（如 172.16.185.103），远程节点用
-#   留空 = 走公网域名（经 relay），需要节点有稳定外网
-control_plane_lan: host-gateway
+# ── 证书 DNS-01 验证 ──
+# provider: 内置支持 alidns / cloudflare / dnspod（凭据变量名见 .env.example）。
+#           其它服务商：改 module + 在 deploy/gateway 说明里加对应 Caddy dns 块。
+# module:   xcaddy 编译进 Caddy 的插件（github.com/caddy-dns/*）。
+dns:
+  provider: alidns
+  module: github.com/caddy-dns/alidns
+
+# ── 登录：GitHub OAuth，申请制白名单 ──
+# client_id / client_secret 放 .env；这里只列非机密的白名单用户名。
+oauth:
+  provider: github
+  github_users: [colehank, GongZhengxin, YaozeLiu0417]
 
 # ── 公网中继（任意公网服务器）──
-# ssh:  用于部署的 SSH 目标（~/.ssh/config 别名，或 user@host）
-# host: 内网机器建反向隧道时要连的公网地址
+# ssh:  部署用 SSH 目标（~/.ssh/config 别名，或 user@host）
+# user: 中继上的隧道专用账号（deploy 会创建）
+# host: gateway 反向隧道要连的公网地址
 relay:
   ssh: aliyun
-  user: relay                   # 中继上建的隧道专用账号
+  user: relay
   host: 39.97.7.248
   port: 22
 
-# ── 控制面（一台稳定内网机，跑 Coder+Postgres+Caddy）──
-control_plane:
+# ── 网关（一台稳定内网机，跑门户，同时是 bastion）──
+# ssh:  部署用 SSH 目标；user/home: 门户以该账号运行、文件放该 home 下
+gateway:
   ssh: turing
+  user: zzl-zgh
+  home: /nfs/t1/userhome/zzl-zgh
 
-# ── 证书 DNS-01 验证服务商 ──
-# module: xcaddy 编译进 Caddy 的插件（https://github.com/caddy-dns 下）。
-# 换服务商：改这里的 module + roles/control-plane/Caddyfile 里的 tls dns 块
-#          + .env 里对应的凭据（各插件语法见其 README，多为 block 形式）。
-dns:
-  module: github.com/caddy-dns/alidns
-  # Cloudflare: github.com/caddy-dns/cloudflare
-  # DNSPod:     github.com/caddy-dns/dnspod
-
-# ── 内网服务器清单（门户里列出，供 SSH / VS Code）──
+# ── 内网服务器清单（门户里列出，供 SSH / VS Code / 工作区）──
 # host/port: 内网地址与 SSH 端口
-# jump:      可选。空=从门户所在机(bastion)直连；填另一台 server 的 name=经它 ProxyJump。
-#            将来某台改直连/走 Tailscale，只需清空或改这里，不动代码。
+# jump:      可选。空=从 gateway 直连；填另一台 server 的 name=经它 ProxyJump。
 servers:
   - { name: turing, host: 172.16.185.103, port: 22 }
   - { name: lecun,  host: 172.18.137.34,  port: 22 }
