@@ -41,7 +41,6 @@ export function Docs() {
   return (
     <div className="docs-wrap">
       <aside className="docs-side">
-        <div className="eyebrow">docs</div>
         <div className="docs-list">
           {docs.map((x) => (
             <button key={x.slug} className={"docs-item" + (active === x.slug ? " active" : "")} onClick={() => open(x.slug)}>

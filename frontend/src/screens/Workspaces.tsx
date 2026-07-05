@@ -16,7 +16,6 @@ function ago(ts: number): string {
 
 export function Workspaces({ goSettings }: { goSettings: () => void }) {
   const [data, setData] = useState<WsServer[] | null>(null);
-  const [loading, setLoading] = useState(true);
   const [newSrv, setNewSrv] = useState("");
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -24,9 +23,7 @@ export function Workspaces({ goSettings }: { goSettings: () => void }) {
   const timer = useRef<number>();
 
   const load = useCallback(async () => {
-    setLoading(true);
     try { setData((await api.workspaces()).servers); } catch { setData([]); }
-    setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -66,42 +63,31 @@ export function Workspaces({ goSettings }: { goSettings: () => void }) {
   servers.forEach((s) => s.sessions.forEach((ss) => rows.push({ sv: s.server, ss })));
   rows.sort((a, b) => Number(b.ss.attached) - Number(a.ss.attached) || b.ss.activity - a.ss.activity);
   const errs = servers.filter((s) => s.error);
-  const uncfg = servers.filter((s) => !s.configured).length;
 
   return (
     <div className="wrap">
       <header className="page-head">
         <div className="ph-row">
-          <div><div className="eyebrow">workspaces</div><h1>工作区</h1></div>
-          <button className="btn subtle sm" onClick={load}><Icon name="refresh" />刷新</button>
+          <h1>工作区</h1>
+          <button className="btn subtle sm" onClick={load} title="刷新"><Icon name="refresh" /></button>
         </div>
-        <p>你的持久会话常驻在服务器上（基于 tmux，与你在机器上 <code>tmux ls</code> 看到的是同一批）。关掉网页只是断开，回来点「打开」即可继续接入 —— 进程与终端历史原样还在。</p>
       </header>
 
       <div className="ws-new-bar">
         {cfg.length ? (
-          <>
-            <span className="nb-label">新建工作区</span>
-            <div className="ws-new">
-              <div className="inp sel"><Icon name="server" /><select value={newSrv} onChange={(e) => setNewSrv(e.target.value)}>{cfg.map((s) => <option key={s.server} value={s.server}>{s.server}</option>)}</select></div>
-              <input value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} placeholder="工作区名（字母/数字）" maxLength={64} />
-              <button className="btn primary sm" disabled={busy} onClick={create}><Icon name="plus" />新建</button>
-            </div>
-          </>
+          <div className="ws-new">
+            <div className="inp sel"><Icon name="server" /><select value={newSrv} onChange={(e) => setNewSrv(e.target.value)}>{cfg.map((s) => <option key={s.server} value={s.server}>{s.server}</option>)}</select></div>
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} placeholder="名称" maxLength={64} />
+            <button className="btn primary sm" disabled={busy} onClick={create}><Icon name="plus" />新建</button>
+          </div>
         ) : (
-          <span className="nb-label" style={{ color: "var(--text-muted)", fontWeight: 500 }}>
-            还没有可用服务器 · <a onClick={goSettings}>前往设置配置凭据</a>
-          </span>
+          <span className="nb-label" style={{ color: "var(--text-muted)", fontWeight: 500 }}>无可用服务器 · <a onClick={goSettings}>去设置</a></span>
         )}
       </div>
 
-      {loading && !data ? (
-        <div className="ws-empty">加载中…</div>
-      ) : (
+      {!data ? null : (
         <>
-          {errs.map((s) => (
-            <div key={s.server} className="ws-empty err"><Icon name="alert" />{s.server} 无法连接：{s.error}</div>
-          ))}
+          {errs.map((s) => <div key={s.server} className="ws-empty err"><Icon name="alert" />{s.server}：{s.error}</div>)}
           {rows.length > 0 ? (
             <div className="ws-list">
               {rows.map(({ sv, ss }) => {
@@ -112,14 +98,12 @@ export function Workspaces({ goSettings }: { goSettings: () => void }) {
                       <span className={"ws-dot" + (ss.attached ? " on" : "")} />
                       <span className="ws-name">{ss.name}</span>
                       <span className="badge accent"><Icon name="server" />{sv}</span>
-                      <span className="badge">{ss.windows} 窗口</span>
-                      {ss.attached && <span className="badge ok"><Icon name="check" />使用中</span>}
-                      {ss.activity > 0 && <span className="ws-time"><Icon name="clock" />活跃 {ago(ss.activity)}</span>}
+                      {ss.activity > 0 && <span className="ws-time">{ago(ss.activity)}</span>}
                     </div>
                     <div className="ws-acts">
                       <a className="btn secondary sm" href={`/terminal/${encodeURIComponent(sv)}?ws=${encodeURIComponent(ss.name)}`} target="_blank" rel="noreferrer"><Icon name="terminal" />打开</a>
-                      <button className={"btn sm " + (armed === k ? "danger" : "subtle")} title="关闭工作区" onClick={() => onKill(sv, ss.name)}>
-                        {armed === k ? "确认关闭" : <Icon name="trash" />}
+                      <button className={"btn sm " + (armed === k ? "danger" : "subtle")} title="关闭" onClick={() => onKill(sv, ss.name)}>
+                        {armed === k ? "确认" : <Icon name="trash" />}
                       </button>
                     </div>
                   </div>
@@ -127,10 +111,7 @@ export function Workspaces({ goSettings }: { goSettings: () => void }) {
               })}
             </div>
           ) : (
-            errs.length === 0 && <div className="ws-empty">还没有工作区 · 在上方选服务器新建一个</div>
-          )}
-          {uncfg > 0 && (
-            <div className="ws-note">{uncfg} 台服务器未配置凭据，不在列表内 · <a onClick={goSettings}>前往设置</a></div>
+            errs.length === 0 && <div className="ws-empty">还没有工作区</div>
           )}
         </>
       )}

@@ -15,21 +15,17 @@ export function Settings({ me, reload, theme, setTheme }: Props) {
   const servers = me?.servers || [];
   return (
     <div className="wrap">
-      <header className="page-head">
-        <div className="eyebrow">settings</div>
-        <h1>设置</h1>
-        <p>管理你连接各内网服务器的凭据与偏好。凭据经 Fernet 加密后仅存于门户，连接时以你的身份进行。</p>
-      </header>
+      <header className="page-head"><h1>设置</h1></header>
 
       <section className="set-sec">
-        <div className="set-h"><h2>连接凭据</h2><p>为每台服务器设置你在该机上的 userid 与密钥 / 密码。</p></div>
+        <div className="set-h"><h2>连接凭据</h2></div>
         <div className="cards">{servers.map((s) => <CredCard key={s.name} s={s} reload={reload} />)}</div>
       </section>
 
       <section className="set-sec">
-        <div className="set-h"><h2>外观</h2><p>切换门户的浅色 / 深色主题。</p></div>
+        <div className="set-h"><h2>外观</h2></div>
         <div className="card"><div className="cfg-body"><div className="set-row">
-          <span className="lbl2">主题<small>选择你偏好的界面配色</small></span>
+          <span className="lbl2">主题</span>
           <div className="seg">
             <button className={theme === "light" ? "on" : ""} onClick={() => setTheme("light")}>浅色</button>
             <button className={theme === "dark" ? "on" : ""} onClick={() => setTheme("dark")}>深色</button>

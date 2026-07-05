@@ -40,10 +40,7 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
         </button>
         <div className="brand">
           <span className="brand-tile"><Icon name="terminal" /></span>
-          <div>
-            <div className="brand-name">devsys</div>
-            <div className="brand-sub">内网开发者门户</div>
-          </div>
+          <div className="brand-name">devsys</div>
         </div>
       </div>
 
@@ -73,7 +70,6 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
           <span className="avatar">{(user || "·").slice(0, 1)}</span>
           <div className="avatar-meta">
             <div className="avatar-name">{user || "…"}</div>
-            <div className="avatar-sub">GitHub 身份</div>
           </div>
           <Icon name="updown" className="avatar-chev" />
         </button>
