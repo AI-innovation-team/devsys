@@ -82,6 +82,9 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
             <button onClick={() => { setView("settings"); setMenuOpen(false); }}>
               <Icon name="settings" />设置
             </button>
+            <button onClick={toggleTheme}>
+              <Icon name={theme === "dark" ? "sun" : "moon"} />{theme === "dark" ? "浅色模式" : "深色模式"}
+            </button>
             <div className="menu-sep" />
             <a href="/oauth2/sign_out" className="danger">
               <Icon name="logout" />退出登录

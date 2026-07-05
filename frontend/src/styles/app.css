@@ -190,11 +190,17 @@ code { font-family: var(--font-mono); font-size: .9em; background: var(--surface
 /* ── 移动端 ── */
 @media (max-width: 760px) {
   .app { flex-direction: column; height: auto; min-height: 100vh; overflow: visible; }
-  .rail { width: 100% !important; height: auto; flex-direction: row; align-items: center; border-right: none; border-bottom: 1px solid var(--border-subtle); padding: 10px 16px; gap: 12px; }
-  .rail .nav, .rail .nav-sec, .rail .rail-bottom, .rail-toggle { display: none; }
-  .rail-top { padding: 0; flex: 1; }
-  .rail-foot { padding: 0; border-top: none; margin-top: 0; width: auto; }
+  .rail { width: 100% !important; height: auto; flex-direction: row; align-items: center; border-right: none; border-bottom: 1px solid var(--border-subtle); padding: 8px 12px; gap: 8px; }
+  .rail .nav-sec, .rail .rail-bottom, .rail-toggle { display: none; }
+  .rail-top { padding: 0; flex: 0 0 auto; }
   .brand { display: flex !important; }
+  .brand-name, .brand-sub { display: none; }
+  .rail .nav { display: flex; flex-direction: row; flex: 1; gap: 4px; overflow-x: auto; padding: 0; min-width: 0; }
+  .rail .nav-item { width: auto; gap: 7px; padding: 8px 12px; }
+  .rail .nav-item .lbl { display: inline; }
+  .nav-item.active::before { display: none; }
+  .rail-foot { padding: 0; border-top: none; margin-top: 0; width: auto; flex: 0 0 auto; }
+  .avatar-meta, .avatar-chev { display: none; }
   .menu { left: auto; right: 0; bottom: auto; top: calc(100% + 6px); min-width: 180px; }
   .main { overflow: visible; }
   .wrap { padding: 24px 16px 48px; }
