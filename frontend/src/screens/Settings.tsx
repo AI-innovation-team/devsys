@@ -82,7 +82,7 @@ function CredCard({ s, reload }: { s: Server; reload: () => Promise<void> | void
         <div className="row2">
           <div className="field">
             <label>用户名 (userid)</label>
-            <div className="inp"><Icon name="user" /><input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="如 zzl-zgh" autoComplete="off" /></div>
+            <div className="inp"><Icon name="user" /><input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="如 alice" autoComplete="off" /></div>
           </div>
           <div className="field">
             <label>认证方式</label>

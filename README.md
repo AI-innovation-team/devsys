@@ -57,10 +57,13 @@ docs/                  门户文档（*.md，部署时作为初始内容）
 前置：本地有 `python3` + `node`（构建前端）；能 SSH 到 relay 与 gateway；gateway 上有 `docker`。
 
 ```bash
-cp .env.example .env      # 填 GitHub OAuth 的 client id/secret + DNS 凭据
-vim config.yaml           # 填 domain / relay / gateway / servers / dns
-./deploy.sh               # 渲染 + 构建前端 + 推 relay + 推 gateway
+cp config.yaml.example config.yaml   # 填 domain / relay / gateway / servers / dns
+cp .env.example .env                 # 填 GitHub OAuth 的 client id/secret + DNS 凭据
+vim config.yaml .env
+./deploy.sh                          # 渲染 + 构建前端 + 推 relay + 推 gateway
 ```
+
+> `config.yaml` 与 `.env` / `.secrets` 均已 `.gitignore`，含真实拓扑/机密，绝不入库。
 
 分步：`./deploy.sh render|build|relay|gateway|check`。
 

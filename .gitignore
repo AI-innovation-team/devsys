@@ -29,3 +29,6 @@ portal.key
 
 # 部署渲染产物
 build/
+
+# 真实拓扑（本地）——用 config.yaml.example 做模板
+config.yaml
