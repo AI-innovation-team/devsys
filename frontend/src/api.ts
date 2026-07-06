@@ -30,12 +30,33 @@ export interface WsServer {
   sessions: WsSession[];
   error: string | null;
 }
-export interface DocMeta {
+export type DocNode =
+  | { type: "doc"; slug: string; title: string }
+  | { type: "group"; title: string; path: string; slug?: string; children: DocNode[] };
+export interface Doc {
   slug: string;
   title: string;
-}
-export interface Doc extends DocMeta {
   content: string;
+}
+
+/** 深度优先找第一篇可打开的文档（组的 _index 也算）。 */
+export function firstDocSlug(nodes: DocNode[]): string {
+  for (const n of nodes) {
+    if (n.type === "doc") return n.slug;
+    if (n.slug) return n.slug;
+    const c = firstDocSlug(n.children);
+    if (c) return c;
+  }
+  return "";
+}
+
+/** 收集全部可打开的 slug（用于校验记忆的“上次打开”是否仍存在）。 */
+export function collectSlugs(nodes: DocNode[], acc: string[] = []): string[] {
+  for (const n of nodes) {
+    if (n.type === "doc") acc.push(n.slug);
+    else { if (n.slug) acc.push(n.slug); collectSlugs(n.children, acc); }
+  }
+  return acc;
 }
 
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
@@ -61,6 +82,6 @@ export const api = {
   workspaces: () => j<{ servers: WsServer[] }>("/api/workspaces"),
   newWs: (server: string, name: string) => j<{ ok: boolean }>("/api/workspaces/new", post({ server, name })),
   killWs: (server: string, name: string) => j<{ ok: boolean }>("/api/workspaces/kill", post({ server, name })),
-  docs: () => j<{ docs: DocMeta[] }>("/api/docs"),
-  doc: (slug: string) => j<Doc>("/api/docs/" + encodeURIComponent(slug)),
+  docs: () => j<{ tree: DocNode[] }>("/api/docs"),
+  doc: (slug: string) => j<Doc>("/api/docs/" + slug.split("/").map(encodeURIComponent).join("/")),
 };

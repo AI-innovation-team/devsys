@@ -40,6 +40,7 @@ export function Settings({ me, reload, theme, setTheme }: Props) {
 
 function CredCard({ s, reload }: { s: Server; reload: () => Promise<void> | void }) {
   const ready = !!(s.has_secret && s.username);
+  const [open, setOpen] = useState(false);
   const [username, setUsername] = useState(s.username || "");
   const [auth, setAuth] = useState<"password" | "key">(s.auth || "password");
   const [pw, setPw] = useState("");
@@ -64,50 +65,56 @@ function CredCard({ s, reload }: { s: Server; reload: () => Promise<void> | void
   };
 
   return (
-    <article className="card">
-      <div className="cfg-head">
+    <article className={"card" + (open ? " open" : "")}>
+      <button className="cfg-head tog" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <div className="srv-title">
           <span className={"srv-dot" + (ready ? " ok" : "")} />
           <span className="srv-name">{s.name}</span>
           <span className="badge">{s.host}:{s.port}</span>
           {s.jump && <span className="badge">via {s.jump}</span>}
         </div>
-        <span className={"badge " + (ready ? "ok" : "warn")}>
-          <Icon name={ready ? "check" : "alert"} />{ready ? "凭据就绪" : "未设置"}
-        </span>
-      </div>
-      <div className="cfg-body">
-        <div className="row2">
-          <div className="field">
-            <label>用户名 (userid)</label>
-            <div className="inp"><Icon name="user" /><input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="如 alice" autoComplete="off" /></div>
+        <div className="tog-r">
+          <span className={"badge " + (ready ? "ok" : "warn")}>
+            <Icon name={ready ? "check" : "alert"} />{ready ? "凭据就绪" : "未设置"}
+          </span>
+          <Icon name="chevron" className="chev" />
+        </div>
+      </button>
+      {open && (
+        <div className="cfg-body">
+          <div className="row2">
+            <div className="field">
+              <label>用户名 (userid)</label>
+              <div className="inp"><Icon name="user" /><input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="如 alice" autoComplete="off" /></div>
+            </div>
+            <div className="field">
+              <label>认证方式</label>
+              <div className="inp"><Icon name="key" /><select value={auth} onChange={(e) => setAuth(e.target.value as "password" | "key")}><option value="password">密码</option><option value="key">SSH 私钥</option></select></div>
+            </div>
           </div>
-          <div className="field">
-            <label>认证方式</label>
-            <div className="inp"><Icon name="key" /><select value={auth} onChange={(e) => setAuth(e.target.value as "password" | "key")}><option value="password">密码</option><option value="key">SSH 私钥</option></select></div>
+          {auth === "password" ? (
+            <div className="field">
+              <label>密码</label>
+              <div className="inp"><Icon name="lock" /><input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder={s.has_secret ? "已保存，留空则不改" : "输入密码"} /></div>
+            </div>
+          ) : (
+            <div className="field">
+              <label>SSH 私钥</label>
+              <textarea className="ta" value={key} onChange={(e) => setKey(e.target.value)} placeholder={s.has_secret ? "已保存，留空则不改" : "-----BEGIN OPENSSH PRIVATE KEY-----"} />
+            </div>
+          )}
+          <div className="cred-foot">
+            <button className="btn primary sm" disabled={saving} onClick={save}><Icon name="save" />保存凭据</button>
+            <span className="save-note">{note}</span>
           </div>
         </div>
-        {auth === "password" ? (
-          <div className="field">
-            <label>密码</label>
-            <div className="inp"><Icon name="lock" /><input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder={s.has_secret ? "已保存，留空则不改" : "输入密码"} /></div>
-          </div>
-        ) : (
-          <div className="field">
-            <label>SSH 私钥</label>
-            <textarea className="ta" value={key} onChange={(e) => setKey(e.target.value)} placeholder={s.has_secret ? "已保存，留空则不改" : "-----BEGIN OPENSSH PRIVATE KEY-----"} />
-          </div>
-        )}
-        <div className="cred-foot">
-          <button className="btn primary sm" disabled={saving} onClick={save}><Icon name="save" />保存凭据</button>
-          <span className="save-note">{note}</span>
-        </div>
-      </div>
+      )}
     </article>
   );
 }
 
 function AccountSection({ email }: { email: string }) {
+  const [open, setOpen] = useState(false);
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [note, setNote] = useState("");
@@ -130,21 +137,26 @@ function AccountSection({ email }: { email: string }) {
   return (
     <section className="set-sec">
       <div className="set-h"><h2>账户</h2></div>
-      <div className="card">
-        <div className="cfg-head">
-          <div className="srv-title"><Icon name="user" /><span className="srv-name" style={{ fontSize: 16 }}>{email}</span></div>
-          <span className="badge">邮箱登录</span>
-        </div>
-        <div className="cfg-body">
-          <div className="row2">
-            <div className="field"><label>新密码</label><div className="inp"><Icon name="lock" /><input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="至少 8 位" autoComplete="new-password" /></div></div>
-            <div className="field"><label>确认新密码</label><div className="inp"><Icon name="lock" /><input type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} placeholder="再输一次" autoComplete="new-password" /></div></div>
+      <div className={"card" + (open ? " open" : "")}>
+        <button className="cfg-head tog" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+          <div className="srv-title"><span className="srv-name" style={{ fontSize: 16 }}>{email}</span></div>
+          <div className="tog-r">
+            <span className="badge">修改密码</span>
+            <Icon name="chevron" className="chev" />
           </div>
-          <div className="cred-foot">
-            <button className="btn primary sm" disabled={busy} onClick={save}><Icon name="save" />修改密码</button>
-            <span className="save-note">{note}</span>
+        </button>
+        {open && (
+          <div className="cfg-body">
+            <div className="row2">
+              <div className="field"><label>新密码</label><div className="inp"><Icon name="lock" /><input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="至少 8 位" autoComplete="new-password" /></div></div>
+              <div className="field"><label>确认新密码</label><div className="inp"><Icon name="lock" /><input type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} placeholder="再输一次" autoComplete="new-password" /></div></div>
+            </div>
+            <div className="cred-foot">
+              <button className="btn primary sm" disabled={busy} onClick={save}><Icon name="save" />修改密码</button>
+              <span className="save-note">{note}</span>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </section>
   );
