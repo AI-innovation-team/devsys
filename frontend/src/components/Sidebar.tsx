@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
 import { Theme, View } from "../App";
-import { DocNode } from "../api";
 import { Icon } from "../icons";
 
 interface Props {
@@ -12,22 +11,7 @@ interface Props {
   theme: Theme;
   toggleTheme: () => void;
   user: string;
-  docTree: DocNode[];
-  activeDoc: string;
-  openDoc: (slug: string) => void;
-  onDocsNav: () => void;
-  docsNav: boolean;
-  setDocsNav: (v: boolean) => void;
-}
-
-/** slug 的各级祖先分组路径，如 a/b/c.md → ["a", "a/b"]。 */
-function ancestorGroups(slug: string): string[] {
-  const parts = slug.split("/");
-  parts.pop();
-  const out: string[] = [];
-  let cur = "";
-  for (const p of parts) { cur = cur ? cur + "/" + p : p; out.push(cur); }
-  return out;
+  onDocs: () => void; // 「文档」按钮：进入文档首页
 }
 
 const NAV: { id: View; icon: string; label: string }[] = [
@@ -36,25 +20,9 @@ const NAV: { id: View; icon: string; label: string }[] = [
   { id: "docs", icon: "file", label: "文档" },
 ];
 
-export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggleTheme, user, docTree, activeDoc, openDoc, onDocsNav, docsNav, setDocsNav }: Props) {
+export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggleTheme, user, onDocs }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const footRef = useRef<HTMLDivElement>(null);
-  const docsBtnRef = useRef<HTMLButtonElement>(null);
-  const flyRef = useRef<HTMLDivElement>(null);
-  const [flyPos, setFlyPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-
-  // 当前文档所在分组自动展开
-  useEffect(() => {
-    if (!activeDoc) return;
-    const anc = ancestorGroups(activeDoc);
-    if (anc.length) setExpanded((prev) => new Set([...prev, ...anc]));
-  }, [activeDoc]);
-  const toggleGroup = (path: string) => setExpanded((prev) => {
-    const n = new Set(prev);
-    n.has(path) ? n.delete(path) : n.add(path);
-    return n;
-  });
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -64,34 +32,6 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
     document.addEventListener("click", onDoc);
     return () => document.removeEventListener("click", onDoc);
   }, [menuOpen]);
-
-  // 文档飞出：定位到「文档」按钮旁，点外部 / Esc 收起
-  useEffect(() => {
-    if (!docsNav) return;
-    const place = () => {
-      const r = docsBtnRef.current?.getBoundingClientRect();
-      if (!r) return;
-      const mobile = window.innerWidth <= 760;
-      setFlyPos(mobile ? { top: r.bottom + 6, left: Math.max(8, r.left) } : { top: r.top, left: r.right + 8 });
-    };
-    place();
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (docsBtnRef.current?.contains(t) || flyRef.current?.contains(t)) return;
-      setDocsNav(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setDocsNav(false); };
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [docsNav, setDocsNav]);
 
   return (
     <nav className={"rail" + (collapsed ? " collapsed" : "")}>
@@ -108,43 +48,16 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
       <div className="nav">
         <div className="nav-sec">工作台</div>
         {NAV.map((n) => (
-          n.id === "docs" ? (
-            <button
-              key={n.id}
-              ref={docsBtnRef}
-              className={"nav-item" + (view === n.id ? " active" : "") + (docsNav ? " flyon" : "")}
-              onClick={onDocsNav}
-              aria-expanded={docsNav}
-            >
-              <Icon name={n.icon} />
-              <span className="lbl">{n.label}</span>
-              <Icon name="chevron" className="nav-caret" />
-            </button>
-          ) : (
-            <button
-              key={n.id}
-              className={"nav-item" + (view === n.id ? " active" : "")}
-              onClick={() => setView(n.id)}
-            >
-              <Icon name={n.icon} />
-              <span className="lbl">{n.label}</span>
-            </button>
-          )
+          <button
+            key={n.id}
+            className={"nav-item" + (view === n.id ? " active" : "")}
+            onClick={() => (n.id === "docs" ? onDocs() : setView(n.id))}
+          >
+            <Icon name={n.icon} />
+            <span className="lbl">{n.label}</span>
+          </button>
         ))}
       </div>
-
-      {docsNav && (
-        <div className="docs-fly" ref={flyRef} style={{ top: flyPos.top, left: flyPos.left }}>
-          <div className="docs-fly-title">文档</div>
-          {docTree.length ? (
-            <div className="docs-list">
-              <DocTree nodes={docTree} depth={0} activeDoc={activeDoc} openDoc={openDoc} expanded={expanded} toggle={toggleGroup} />
-            </div>
-          ) : (
-            <div className="docs-fly-empty">暂无文档</div>
-          )}
-        </div>
-      )}
 
       <div className="rail-bottom">
         <button className="nav-item" onClick={toggleTheme}>
@@ -177,59 +90,6 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
         )}
       </div>
     </nav>
-  );
-}
-
-// 递归渲染文档层级树：doc → 可点条目；group → 可折叠分组（有 _index 则标题可打开着陆页）。
-interface TreeProps {
-  nodes: DocNode[];
-  depth: number;
-  activeDoc: string;
-  openDoc: (slug: string) => void;
-  expanded: Set<string>;
-  toggle: (path: string) => void;
-}
-function DocTree({ nodes, depth, activeDoc, openDoc, expanded, toggle }: TreeProps) {
-  return (
-    <>
-      {nodes.map((n) => {
-        if (n.type === "doc") {
-          return (
-            <button
-              key={n.slug}
-              className={"docs-item" + (activeDoc === n.slug ? " active" : "")}
-              style={{ paddingLeft: 12 + depth * 14 }}
-              onClick={() => openDoc(n.slug)}
-            >
-              {n.title}
-            </button>
-          );
-        }
-        const open = expanded.has(n.path);
-        const hasKids = n.children.length > 0;
-        const isActive = !!n.slug && activeDoc === n.slug;
-        return (
-          <div key={n.path} className="docs-group-wrap">
-            <div className={"docs-group" + (isActive ? " active" : "")} style={{ paddingLeft: 4 + depth * 14 }}>
-              <button
-                className="grp-caret-btn"
-                onClick={() => toggle(n.path)}
-                aria-label={open ? "折叠分组" : "展开分组"}
-                style={{ visibility: hasKids ? "visible" : "hidden" }}
-              >
-                <Icon name="chevron" className={"grp-caret" + (open ? " open" : "")} />
-              </button>
-              <button className="grp-label" onClick={() => (n.slug ? openDoc(n.slug) : toggle(n.path))}>
-                {n.title}
-              </button>
-            </div>
-            {open && hasKids && (
-              <DocTree nodes={n.children} depth={depth + 1} activeDoc={activeDoc} openDoc={openDoc} expanded={expanded} toggle={toggle} />
-            )}
-          </div>
-        );
-      })}
-    </>
   );
 }
 

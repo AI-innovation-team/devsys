@@ -45,13 +45,26 @@ do_relay() {
   ssh "$RELAY_SSH" "sudo RELAY_USER=$(printf %q "$RELAY_USER") bash ~/relay/setup-relay.sh"
 }
 
+# 文档镜像同步：以仓库 docs/ 为准，多退少补（含删除），门户即时生效、无需重启。
+do_docs() {
+  log "文档 → $GW_SSH:~/gateway/docs（镜像同步）"
+  ssh "$GW_SSH" 'mkdir -p ~/gateway/docs'
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -az --delete --exclude='.*' docs/ "$GW_SSH:~/gateway/docs/"
+  else
+    # 无 rsync：清空后整目录重发（等效镜像）
+    ssh "$GW_SSH" 'rm -rf ~/gateway/docs && mkdir -p ~/gateway/docs'
+    scp -q -r docs/. "$GW_SSH:~/gateway/docs/"
+  fi
+}
+
 do_gateway() {
   log "gateway → $GW_SSH（后端 + 前端 + 配置 + 服务）"
   ssh "$GW_SSH" 'mkdir -p ~/gateway ~/gateway/systemd ~/gateway/web ~/gateway/backend'
   # 后端（只发源码 + uv 清单，不发本地 .venv）
   scp -q -r backend/devsys_portal backend/pyproject.toml backend/uv.lock "$GW_SSH:~/gateway/backend/"
   scp -q -r frontend/dist/. "$GW_SSH:~/gateway/web/"
-  ssh "$GW_SSH" 'test -d ~/gateway/docs' || scp -q -r docs "$GW_SSH:~/gateway/docs"
+  do_docs
   # 渲染出的配置
   scp -q build/gateway/Caddyfile build/gateway/control-plane.env build/gateway/oauth2-proxy.cfg \
          build/gateway/servers.json build/gateway/caddy-module.txt "$GW_SSH:~/gateway/"
@@ -77,8 +90,9 @@ case "$STEP" in
   render)  do_render ;;
   build)   do_build ;;
   relay)   do_relay ;;
+  docs)    do_docs; log "文档已同步 ✅（刷新网页即生效）" ;;
   gateway) do_render; do_gateway ;;
   all)     do_render; do_build; do_relay; do_gateway
            log "完成 ✅  浏览器打开 https://$DOMAIN:$PUBLIC_PORT" ;;
-  *) echo "用法: ./deploy.sh [all|render|build|relay|gateway|check]"; exit 1 ;;
+  *) echo "用法: ./deploy.sh [all|render|build|relay|gateway|docs|check]"; exit 1 ;;
 esac
