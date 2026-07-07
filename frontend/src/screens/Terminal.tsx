@@ -1,7 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
 import { Icon } from "../icons";
@@ -42,6 +42,7 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
   const page = useRef<HTMLDivElement>(null);
   const mount = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
+  const keys = useRef<HTMLDivElement>(null);
   const sendRef = useRef<((d: string) => void) | null>(null);
   const ctrlRef = useRef(false);
   const [conn, setConn] = useState<null | boolean>(null);
@@ -137,7 +138,7 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
     else box.current?.requestFullscreen?.();
   };
 
-  const press = (k: KeyDef) => {
+  const press = useCallback((k: KeyDef) => {
     if (k.ctrl) { const n = !ctrlRef.current; ctrlRef.current = n; setCtrl(n); return; }
     if (k.paste) {
       navigator.clipboard?.readText?.().then((txt) => { if (txt) sendRef.current?.(txt); }).catch(() => {});
@@ -147,7 +148,29 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
     let seq = k.seq ?? "";
     if (ctrlRef.current) { seq = ctrlByte(seq); ctrlRef.current = false; setCtrl(false); }
     sendRef.current?.(seq);
-  };
+  }, []);
+
+  // 阻止软键盘被收起的唯一可靠办法：原生非 passive 监听，在指针/触摸**落下瞬间**
+  // preventDefault，从根上阻止焦点离开 xterm 的隐藏 textarea（React 合成事件对
+  // touchstart 可能 passive，preventDefault 会失效，故必须用原生 addEventListener）。
+  // 键条改两行自动换行、不横滑，preventDefault 便没有挡滚动的副作用。
+  useEffect(() => {
+    const el = keys.current;
+    if (!el) return;
+    const onDown = (e: Event) => {
+      const btn = (e.target as HTMLElement).closest?.(".kbtn") as HTMLElement | null;
+      if (!btn) return;
+      e.preventDefault();
+      const k = KEYS[Number(btn.dataset.idx)];
+      if (k) press(k);
+    };
+    el.addEventListener("touchstart", onDown, { passive: false });
+    el.addEventListener("mousedown", onDown);
+    return () => {
+      el.removeEventListener("touchstart", onDown);
+      el.removeEventListener("mousedown", onDown);
+    };
+  }, [press]);
 
   return (
     <div className="tpage" ref={page}>
@@ -166,15 +189,15 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
             <button className="fsbtn" onClick={toggleFs} title="全屏"><Icon name={fs ? "min" : "max"} /></button>
           </div>
           <div className="term-body"><div ref={mount} style={{ height: "100%", width: "100%" }} /></div>
-          {/* 用不可聚焦的 div（而非 button）：tap 它不会夺走 xterm 隐藏 textarea 的焦点，
-              手机软键盘因此不会被收起；onClick 只在 tap 时触发、横滑滚动键条时不触发。 */}
-          <div className="term-keys" role="toolbar" aria-label="辅助键">
-            {KEYS.map((k) => (
+          {/* 不可聚焦 div + 原生 touchstart/mousedown preventDefault（见上方 effect），
+              双保险不夺 textarea 焦点、软键盘不收起。data-idx 供事件委托取键。 */}
+          <div className="term-keys" role="toolbar" aria-label="辅助键" ref={keys}>
+            {KEYS.map((k, i) => (
               <div
                 key={k.label}
                 role="button"
+                data-idx={i}
                 className={"kbtn" + (k.ctrl && ctrl ? " active" : "")}
-                onClick={() => press(k)}
               >{k.label}</div>
             ))}
           </div>
