@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, WsServer, WsSession } from "../api";
+import { UploadPanel } from "../components/UploadPanel";
 import { Icon } from "../icons";
 
 const NAME_RE = /^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,63}$/;
@@ -20,6 +21,7 @@ export function Workspaces({ goSettings }: { goSettings: () => void }) {
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [armed, setArmed] = useState<string | null>(null);
   const timer = useRef<number>();
   const nameRef = useRef<HTMLInputElement>(null);
@@ -75,10 +77,15 @@ export function Workspaces({ goSettings }: { goSettings: () => void }) {
           <h1>工作区</h1>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn subtle sm" onClick={load} title="刷新"><Icon name="refresh" /></button>
+            <button className={"btn sm " + (uploading ? "subtle" : "secondary")} onClick={() => setUploading((u) => !u)} title="上传文件/目录" disabled={!cfg.length}><Icon name="upload" /></button>
             <button className={"btn sm " + (adding ? "subtle" : "primary")} onClick={() => setAdding((a) => !a)} title="新建工作区"><Icon name="plus" /></button>
           </div>
         </div>
       </header>
+
+      {uploading && cfg.length > 0 && (
+        <UploadPanel servers={cfg.map((s) => s.server)} defaultServer={newSrv} />
+      )}
 
       {adding && (
         <div className="ws-new-bar">

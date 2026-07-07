@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse
 
 from .config import WEB_DIR
-from .routes import (docs_routes, me, password, settings, terminal,
+from .routes import (docs_routes, me, password, settings, terminal, upload,
                      vscode_routes, workspaces)
 
 
@@ -27,6 +27,7 @@ def create_app() -> FastAPI:
     app.include_router(settings.router)
     app.include_router(password.router)
     app.include_router(workspaces.router)
+    app.include_router(upload.router)
     app.include_router(docs_routes.router)
     # web SSH / VS Code
     app.include_router(terminal.router)
