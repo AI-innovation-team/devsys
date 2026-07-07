@@ -41,7 +41,6 @@ const ctrlByte = (s: string) => {
 export function Terminal({ server, ws }: { server: string; ws: string }) {
   const mount = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
-  const termRef = useRef<XTerm | null>(null);
   const sendRef = useRef<((d: string) => void) | null>(null);
   const ctrlRef = useRef(false);
   const [conn, setConn] = useState<null | boolean>(null);
@@ -64,7 +63,6 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
       cursorBlink: true,
       theme: { background: "#1a1b1e", foreground: "#e6e6e6", cursor: "#7FB069", selectionBackground: "rgba(127,176,105,.28)" },
     });
-    termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(mount.current);
@@ -103,7 +101,6 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
       document.removeEventListener("fullscreenchange", onFs);
       sock.close();
       term.dispose();
-      termRef.current = null;
       sendRef.current = null;
     };
   }, [server, ws]);
@@ -113,20 +110,16 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
     else box.current?.requestFullscreen?.();
   };
 
-  // 辅助键：pointerdown + preventDefault 保住终端焦点（不收起手机软键盘）。
   const press = (k: KeyDef) => {
-    const term = termRef.current;
-    if (k.ctrl) { const n = !ctrlRef.current; ctrlRef.current = n; setCtrl(n); term?.focus(); return; }
+    if (k.ctrl) { const n = !ctrlRef.current; ctrlRef.current = n; setCtrl(n); return; }
     if (k.paste) {
       navigator.clipboard?.readText?.().then((txt) => { if (txt) sendRef.current?.(txt); }).catch(() => {});
       if (ctrlRef.current) { ctrlRef.current = false; setCtrl(false); }
-      term?.focus();
       return;
     }
     let seq = k.seq ?? "";
     if (ctrlRef.current) { seq = ctrlByte(seq); ctrlRef.current = false; setCtrl(false); }
     sendRef.current?.(seq);
-    term?.focus();
   };
 
   return (
@@ -146,15 +139,16 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
             <button className="fsbtn" onClick={toggleFs} title="全屏"><Icon name={fs ? "min" : "max"} /></button>
           </div>
           <div className="term-body"><div ref={mount} style={{ height: "100%", width: "100%" }} /></div>
+          {/* 用不可聚焦的 div（而非 button）：tap 它不会夺走 xterm 隐藏 textarea 的焦点，
+              手机软键盘因此不会被收起；onClick 只在 tap 时触发、横滑滚动键条时不触发。 */}
           <div className="term-keys" role="toolbar" aria-label="辅助键">
             {KEYS.map((k) => (
-              <button
+              <div
                 key={k.label}
-                type="button"
-                tabIndex={-1}
-                className={k.ctrl && ctrl ? "active" : undefined}
-                onPointerDown={(e) => { e.preventDefault(); press(k); }}
-              >{k.label}</button>
+                role="button"
+                className={"kbtn" + (k.ctrl && ctrl ? " active" : "")}
+                onClick={() => press(k)}
+              >{k.label}</div>
             ))}
           </div>
         </div>
