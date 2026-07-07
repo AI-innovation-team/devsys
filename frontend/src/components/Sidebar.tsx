@@ -83,7 +83,7 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
               <Icon name={theme === "dark" ? "sun" : "moon"} />{theme === "dark" ? "浅色模式" : "深色模式"}
             </button>
             <div className="menu-sep" />
-            <a href="/oauth2/sign_out" className="danger">
+            <a href="/oauth2/sign_out?rd=/oauth2/sign_in" className="danger">
               <Icon name="logout" />退出登录
             </a>
           </div>
