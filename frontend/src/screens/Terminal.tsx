@@ -150,25 +150,30 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
     sendRef.current?.(seq);
   }, []);
 
-  // 阻止软键盘被收起的唯一可靠办法：原生非 passive 监听，在指针/触摸**落下瞬间**
-  // preventDefault，从根上阻止焦点离开 xterm 的隐藏 textarea（React 合成事件对
-  // touchstart 可能 passive，preventDefault 会失效，故必须用原生 addEventListener）。
-  // 键条改两行自动换行、不横滑，preventDefault 便没有挡滚动的副作用。
+  // 单行横滑 + 键盘不收：横滑与"touchstart 里 preventDefault"互斥，故用手势判定——
+  // touchstart/move 不拦截（放行横向滚动），只在"没滑动的一次轻点"于 touchend 上
+  // preventDefault，阻止随后合成的 mouse/focus 序列离开 xterm 的隐藏 textarea，
+  // 键盘因此保持。桌面走 mousedown（同样 preventDefault 保焦）。
   useEffect(() => {
     const el = keys.current;
     if (!el) return;
-    const onDown = (e: Event) => {
-      const btn = (e.target as HTMLElement).closest?.(".kbtn") as HTMLElement | null;
-      if (!btn) return;
-      e.preventDefault();
-      const k = KEYS[Number(btn.dataset.idx)];
-      if (k) press(k);
-    };
-    el.addEventListener("touchstart", onDown, { passive: false });
-    el.addEventListener("mousedown", onDown);
+    const btnAt = (t: EventTarget | null) => (t as HTMLElement)?.closest?.(".kbtn") as HTMLElement | null;
+    const fire = (btn: HTMLElement | null) => { if (btn) { const k = KEYS[Number(btn.dataset.idx)]; if (k) press(k); } };
+    let startBtn: HTMLElement | null = null;
+    let sx = 0, sy = 0, moved = false;
+    const onTouchStart = (e: TouchEvent) => { const t = e.touches[0]; startBtn = btnAt(e.target); sx = t.clientX; sy = t.clientY; moved = false; };
+    const onTouchMove = (e: TouchEvent) => { const t = e.touches[0]; if (Math.abs(t.clientX - sx) > 8 || Math.abs(t.clientY - sy) > 8) moved = true; };
+    const onTouchEnd = (e: TouchEvent) => { if (!moved && startBtn) { e.preventDefault(); fire(startBtn); } startBtn = null; };
+    const onMouseDown = (e: MouseEvent) => { const b = btnAt(e.target); if (b) { e.preventDefault(); fire(b); } };
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: true });
+    el.addEventListener("touchend", onTouchEnd, { passive: false });
+    el.addEventListener("mousedown", onMouseDown);
     return () => {
-      el.removeEventListener("touchstart", onDown);
-      el.removeEventListener("mousedown", onDown);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("mousedown", onMouseDown);
     };
   }, [press]);
 

@@ -39,11 +39,14 @@ html, body, #root { height: 100%; }
 /* 手机端辅助键条：桌面默认隐藏，触屏或窄屏自动显示。横向可滚动，风格随深色终端卡。 */
 .term-keys { display: none; }
 @media (pointer: coarse), (max-width: 820px) {
-  /* 两行自动换行铺满，不横滑——这样键按钮上的 touchstart preventDefault 不会挡滚动。 */
+  /* 单行横滑：touch-action pan-x 让浏览器处理横向滚动，纵向手势不劫持。 */
   .term-keys {
-    display: flex; flex-wrap: wrap; gap: 6px; padding: 7px 8px;
+    display: flex; gap: 6px; padding: 7px 8px;
+    overflow-x: auto; overflow-y: hidden; touch-action: pan-x;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
     background: rgba(0, 0, 0, .28); border-top: 1px solid rgba(255, 255, 255, .06);
   }
+  .term-keys::-webkit-scrollbar { display: none; }
 }
 .term-keys .kbtn {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
