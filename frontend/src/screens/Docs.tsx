@@ -150,7 +150,7 @@ export function Docs({ tree, active, openDoc, slugs, childDocs, crumbs, pager }:
       <div className="docs-wrap">
         <article className="docs-main doc-home">
           <h1 className="home-title">文档</h1>
-          <p className="home-sub">devsys 内网门户的使用与运维文档。选择一个主题开始。</p>
+          <p className="home-sub">AIT.dev 内网门户的使用与运维文档。选择一个主题开始。</p>
           {!hasDocs && <div className="ws-empty">还没有文档 · 在服务器的 docs 目录放置 .md 文件即可</div>}
           {loose.length > 0 && <div className="home-grid">{loose.map(card)}</div>}
           {groups.map((g) => (

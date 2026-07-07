@@ -46,7 +46,7 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
     sock.onmessage = (e) => term.write(e.data);
     sock.onclose = () => {
       setConn(false);
-      term.write("\r\n\x1b[2m[devsys] " + (ws ? "已断开 · 工作区仍在后台运行，回门户可重新接入" : "连接已关闭") + "\x1b[0m\r\n");
+      term.write("\r\n\x1b[2m[AIT.dev] " + (ws ? "已断开 · 工作区仍在后台运行，回门户可重新接入" : "连接已关闭") + "\x1b[0m\r\n");
     };
     term.onData((d) => { if (sock.readyState === 1) sock.send(JSON.stringify({ t: "i", d })); });
 
@@ -74,7 +74,7 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
         <div className="l">
           <a className="back" href="/" title="返回门户"><Icon name="arrowLeft" /></a>
           <span className="tile"><Icon name="terminal" /></span>
-          <span className="tbrand">devsys</span>
+          <span className="tbrand">AIT.dev</span>
         </div>
         <span className="sp"><span className={"dot" + (conn === true ? " on" : conn === false ? " off" : "")} />{who}</span>
       </div>

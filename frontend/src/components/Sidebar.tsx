@@ -41,7 +41,7 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
         </button>
         <div className="brand">
           <span className="brand-tile"><BrandMark /></span>
-          <div className="brand-name">devsys</div>
+          <div className="brand-name">AIT.dev</div>
         </div>
       </div>
 
