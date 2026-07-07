@@ -34,7 +34,7 @@ body{margin:0;font-family:var(--font-sans);color:var(--text-body);background:var
 @keyframes edgeBreath{0%,100%{opacity:.07}50%{opacity:.24}}
 .inner{position:relative;width:100%;max-width:350px;display:flex;flex-direction:column;align-items:center}
 .tile{width:62px;height:62px;border-radius:17px;margin-bottom:20px;display:inline-flex;align-items:center;justify-content:center;
-  background:var(--stone-900);color:var(--cream);box-shadow:0 10px 30px -12px rgba(42,42,40,.55);
+  background:transparent;color:var(--text-strong);
   opacity:0;transform:scale(.86);animation:tileIn .8s var(--ease-spring) .15s forwards}
 .tile .cube{animation:cubeBob 4s ease-in-out infinite}
 .tile .face-top{animation:faceGlow 4s ease-in-out infinite}
@@ -72,7 +72,7 @@ form{width:100%;margin:0;display:flex;flex-direction:column;gap:10px}
   <svg class="net" id="net" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g id="netg"></g></svg>
   <div class="inner">
     <span class="tile">
-      <svg class="cube" width="36" height="36" viewBox="0 0 24 24" aria-label="devsys" style="overflow:visible">
+      <svg class="cube" width="54" height="54" viewBox="0 0 24 24" aria-label="devsys" style="overflow:visible">
         <path d="M12 2.6 20.5 7.3 12 12 3.5 7.3Z" fill="var(--accent)" class="face-top"/>
         <path d="M3.5 7.9 11.4 12.3 11.4 21.4 3.5 17Z" fill="currentColor" fill-opacity="0.9"/>
         <path d="M20.5 7.9 12.6 12.3 12.6 21.4 20.5 17Z" fill="currentColor" fill-opacity="0.55"/>
