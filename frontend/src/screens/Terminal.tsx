@@ -12,23 +12,15 @@ type KeyDef = { label: string; seq?: string; ctrl?: boolean; paste?: boolean };
 // 手机端辅助键条：桌面隐藏，触屏/窄屏自动显示（见 terminal.css）。
 // 每键点击即向 PTY 发对应转义序列；粘性 Ctrl 把下一个可打印字符转成控制码。
 const KEYS: KeyDef[] = [
-  { label: "Esc", seq: "\x1b" },
+  { label: "⇧Tab", seq: "\x1b[Z" },
+  { label: "^C", seq: "\x03" },
+  { label: "/", seq: "/" },
   { label: "Ctrl", ctrl: true },
   { label: "Tab", seq: "\t" },
-  { label: "⇧Tab", seq: "\x1b[Z" },
   { label: "←", seq: "\x1b[D" },
   { label: "↑", seq: "\x1b[A" },
   { label: "↓", seq: "\x1b[B" },
   { label: "→", seq: "\x1b[C" },
-  { label: "Home", seq: "\x1b[H" },
-  { label: "End", seq: "\x1b[F" },
-  { label: "/", seq: "/" },
-  { label: "-", seq: "-" },
-  { label: "|", seq: "|" },
-  { label: "~", seq: "~" },
-  { label: "^C", seq: "\x03" },
-  { label: "^D", seq: "\x04" },
-  { label: "粘贴", paste: true },
 ];
 
 // Ctrl+可打印字符 → 控制码（C0）：0x20–0x7e 映射到 char & 0x1f（a/A→\x01 … c/C→\x03 …）。
