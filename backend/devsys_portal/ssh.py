@@ -1,8 +1,16 @@
 """asyncssh 连接（供 web SSH、工作区、VS Code 复用）。
 
 用用户自设的 username + 密钥/密码连目标机；server 若配了 jump 则先连跳板再 ProxyJump。
+
+注意：asyncssh 底层对 username 做 saslprep(NFKC)归一化，导致
+U+2011(NBHYPHEN)与 U+2010(HYPHEN)无法区分。这里把 connection 模块
+内的 saslprep 替换为空操作，只影响 username，密码不走 saslprep，不受影响。
 """
 import asyncssh
+import asyncssh.connection
+
+# 防止 U+2011↔U+2010 被 NFKC 归一化为同一字符
+asyncssh.connection.saslprep = lambda s: s
 
 from .servers import find_server
 from .storage import load_meta, read_secret
