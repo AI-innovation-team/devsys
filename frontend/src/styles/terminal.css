@@ -34,3 +34,23 @@ html, body, #root { height: 100%; }
 .fsbtn:hover { color: rgba(230, 230, 230, .85); background: rgba(255, 255, 255, .09); }
 .fsbtn .ic { width: 15px; height: 15px; }
 .term-body { flex: 1; padding: 10px 12px; min-height: 0; }
+
+/* 手机端辅助键条：桌面默认隐藏，触屏或窄屏自动显示。横向可滚动，风格随深色终端卡。 */
+.term-keys { display: none; }
+@media (pointer: coarse), (max-width: 820px) {
+  .term-keys {
+    display: flex; gap: 6px; padding: 7px 8px;
+    overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+    background: rgba(0, 0, 0, .28); border-top: 1px solid rgba(255, 255, 255, .06);
+  }
+  .term-keys::-webkit-scrollbar { display: none; }
+}
+.term-keys button {
+  flex: 0 0 auto; min-width: 42px; height: 34px; padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, .1); background: rgba(255, 255, 255, .06);
+  color: rgba(230, 230, 230, .85); border-radius: 7px;
+  font-family: var(--font-mono); font-size: 13px; line-height: 1; cursor: pointer;
+  user-select: none; -webkit-user-select: none; touch-action: manipulation;
+}
+.term-keys button:active { background: rgba(255, 255, 255, .16); }
+.term-keys button.active { background: var(--terracotta, #BD5D3A); color: #fff; border-color: transparent; }

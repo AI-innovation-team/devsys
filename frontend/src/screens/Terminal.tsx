@@ -7,12 +7,47 @@ import { api } from "../api";
 import { Icon } from "../icons";
 import "../styles/terminal.css";
 
+type KeyDef = { label: string; seq?: string; ctrl?: boolean; paste?: boolean };
+
+// 手机端辅助键条：桌面隐藏，触屏/窄屏自动显示（见 terminal.css）。
+// 每键点击即向 PTY 发对应转义序列；粘性 Ctrl 把下一个可打印字符转成控制码。
+const KEYS: KeyDef[] = [
+  { label: "Esc", seq: "\x1b" },
+  { label: "Ctrl", ctrl: true },
+  { label: "Tab", seq: "\t" },
+  { label: "⇧Tab", seq: "\x1b[Z" },
+  { label: "←", seq: "\x1b[D" },
+  { label: "↑", seq: "\x1b[A" },
+  { label: "↓", seq: "\x1b[B" },
+  { label: "→", seq: "\x1b[C" },
+  { label: "Home", seq: "\x1b[H" },
+  { label: "End", seq: "\x1b[F" },
+  { label: "/", seq: "/" },
+  { label: "-", seq: "-" },
+  { label: "|", seq: "|" },
+  { label: "~", seq: "~" },
+  { label: "^C", seq: "\x03" },
+  { label: "^D", seq: "\x04" },
+  { label: "粘贴", paste: true },
+];
+
+// Ctrl+可打印字符 → 控制码（C0）：0x20–0x7e 映射到 char & 0x1f（a/A→\x01 … c/C→\x03 …）。
+const ctrlByte = (s: string) => {
+  if (s.length !== 1) return s;
+  const c = s.charCodeAt(0);
+  return c >= 0x20 && c < 0x7f ? String.fromCharCode(c & 0x1f) : s;
+};
+
 export function Terminal({ server, ws }: { server: string; ws: string }) {
   const mount = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
+  const termRef = useRef<XTerm | null>(null);
+  const sendRef = useRef<((d: string) => void) | null>(null);
+  const ctrlRef = useRef(false);
   const [conn, setConn] = useState<null | boolean>(null);
   const [title, setTitle] = useState(ws ? ws : server);
   const [fs, setFs] = useState(false);
+  const [ctrl, setCtrl] = useState(false);
   const who = ws ? server + " · " + ws : server;
 
   useEffect(() => {
@@ -29,6 +64,7 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
       cursorBlink: true,
       theme: { background: "#1a1b1e", foreground: "#e6e6e6", cursor: "#7FB069", selectionBackground: "rgba(127,176,105,.28)" },
     });
+    termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(mount.current);
@@ -38,6 +74,8 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const url = `${proto}://${location.host}/ws/ssh/${encodeURIComponent(server)}` + (ws ? `?ws=${encodeURIComponent(ws)}` : "");
     const sock = new WebSocket(url);
+    const send = (d: string) => { if (sock.readyState === 1) sock.send(JSON.stringify({ t: "i", d })); };
+    sendRef.current = send;
     const sendResize = () => {
       try { fit.fit(); } catch { /* ignore */ }
       if (sock.readyState === 1) sock.send(JSON.stringify({ t: "r", c: term.cols, r: term.rows }));
@@ -48,7 +86,12 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
       setConn(false);
       term.write("\r\n\x1b[2m[AIT.dev] " + (ws ? "已断开 · 工作区仍在后台运行，回门户可重新接入" : "连接已关闭") + "\x1b[0m\r\n");
     };
-    term.onData((d) => { if (sock.readyState === 1) sock.send(JSON.stringify({ t: "i", d })); });
+    term.onData((d) => {
+      // 粘性 Ctrl 激活时，软键盘打出的下一个字符转控制码。
+      let out = d;
+      if (ctrlRef.current) { ctrlRef.current = false; setCtrl(false); out = ctrlByte(d); }
+      send(out);
+    });
 
     const onResize = () => sendResize();
     window.addEventListener("resize", onResize);
@@ -60,12 +103,30 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
       document.removeEventListener("fullscreenchange", onFs);
       sock.close();
       term.dispose();
+      termRef.current = null;
+      sendRef.current = null;
     };
   }, [server, ws]);
 
   const toggleFs = () => {
     if (document.fullscreenElement) document.exitFullscreen();
     else box.current?.requestFullscreen?.();
+  };
+
+  // 辅助键：pointerdown + preventDefault 保住终端焦点（不收起手机软键盘）。
+  const press = (k: KeyDef) => {
+    const term = termRef.current;
+    if (k.ctrl) { const n = !ctrlRef.current; ctrlRef.current = n; setCtrl(n); term?.focus(); return; }
+    if (k.paste) {
+      navigator.clipboard?.readText?.().then((txt) => { if (txt) sendRef.current?.(txt); }).catch(() => {});
+      if (ctrlRef.current) { ctrlRef.current = false; setCtrl(false); }
+      term?.focus();
+      return;
+    }
+    let seq = k.seq ?? "";
+    if (ctrlRef.current) { seq = ctrlByte(seq); ctrlRef.current = false; setCtrl(false); }
+    sendRef.current?.(seq);
+    term?.focus();
   };
 
   return (
@@ -85,6 +146,17 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
             <button className="fsbtn" onClick={toggleFs} title="全屏"><Icon name={fs ? "min" : "max"} /></button>
           </div>
           <div className="term-body"><div ref={mount} style={{ height: "100%", width: "100%" }} /></div>
+          <div className="term-keys" role="toolbar" aria-label="辅助键">
+            {KEYS.map((k) => (
+              <button
+                key={k.label}
+                type="button"
+                tabIndex={-1}
+                className={k.ctrl && ctrl ? "active" : undefined}
+                onPointerDown={(e) => { e.preventDefault(); press(k); }}
+              >{k.label}</button>
+            ))}
+          </div>
         </div>
       </div>
     </div>
