@@ -40,7 +40,7 @@ do_build() {
 }
 
 do_relay() {
-  log "relay → $RELAY_SSH（隧道账号 + GatewayPorts）"
+  log "relay → ${RELAY_SSH}（隧道账号 + GatewayPorts）"
   scp -q -r deploy/relay "$RELAY_SSH:~/"
   ssh "$RELAY_SSH" "sudo RELAY_USER=$(printf %q "$RELAY_USER") bash ~/relay/setup-relay.sh"
 }
@@ -59,7 +59,7 @@ do_docs() {
 }
 
 do_gateway() {
-  log "gateway → $GW_SSH（后端 + 前端 + 配置 + 服务）"
+  log "gateway → ${GW_SSH}（后端 + 前端 + 配置 + 服务）"
   ssh "$GW_SSH" 'mkdir -p ~/gateway ~/gateway/systemd ~/gateway/web ~/gateway/backend'
   # 后端（只发源码 + uv 清单，不发本地 .venv）
   scp -q -r backend/devsys_portal backend/pyproject.toml backend/uv.lock "$GW_SSH:~/gateway/backend/"
