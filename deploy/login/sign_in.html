@@ -36,11 +36,11 @@ body{margin:0;font-family:var(--font-sans);color:var(--text-body);background:var
 .tile{width:62px;height:62px;border-radius:17px;margin-bottom:20px;display:inline-flex;align-items:center;justify-content:center;
   background:var(--stone-900);color:var(--cream);box-shadow:0 10px 30px -12px rgba(42,42,40,.55);
   opacity:0;transform:scale(.86);animation:tileIn .8s var(--ease-spring) .15s forwards}
-.tile .arc{stroke-dasharray:132;stroke-dashoffset:132;animation:arcDraw 1.5s var(--ease-out) .5s forwards}
-.tile .dot{opacity:0;animation:dotIn .5s var(--ease-spring) forwards}
+.tile .cube{animation:cubeBob 4s ease-in-out infinite}
+.tile .face-top{animation:faceGlow 4s ease-in-out infinite}
 @keyframes tileIn{to{opacity:1;transform:scale(1)}}
-@keyframes arcDraw{to{stroke-dashoffset:0}}
-@keyframes dotIn{to{opacity:1}}
+@keyframes cubeBob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+@keyframes faceGlow{0%,100%{opacity:.7}50%{opacity:1}}
 .rise{opacity:0;transform:translateY(13px);animation:rise .7s var(--ease-out) forwards}
 @keyframes rise{to{opacity:1;transform:none}}
 .name{font-family:var(--font-serif);font-size:31px;font-weight:600;color:var(--text-strong);letter-spacing:.05em}
@@ -72,12 +72,10 @@ form{width:100%;margin:0;display:flex;flex-direction:column;gap:10px}
   <svg class="net" id="net" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g id="netg"></g></svg>
   <div class="inner">
     <span class="tile">
-      <svg width="38" height="38" viewBox="0 0 72 72" aria-label="devsys" style="overflow:visible">
-        <path class="arc" d="M 58,10 A 28,28 0 1,0 58,62" fill="none" stroke="currentColor" stroke-width="5.5" stroke-linecap="round"/>
-        <path d="M 52,20 A 16,16 0 1,0 52,52" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.28"/>
-        <circle class="dot" cx="58" cy="10" r="4.5" fill="currentColor" style="animation-delay:1.5s"/>
-        <circle class="dot" cx="58" cy="62" r="4.5" fill="currentColor" style="animation-delay:1.7s"/>
-        <circle class="dot" cx="36" cy="36" r="3" fill="currentColor" opacity="0.5" style="animation-delay:1.9s"/>
+      <svg class="cube" width="36" height="36" viewBox="0 0 24 24" aria-label="devsys" style="overflow:visible">
+        <path d="M12 2.6 20.5 7.3 12 12 3.5 7.3Z" fill="var(--accent)" class="face-top"/>
+        <path d="M3.5 7.9 11.4 12.3 11.4 21.4 3.5 17Z" fill="currentColor" fill-opacity="0.9"/>
+        <path d="M20.5 7.9 12.6 12.3 12.6 21.4 20.5 17Z" fill="currentColor" fill-opacity="0.55"/>
       </svg>
     </span>
     <div class="rise" style="animation-delay:.5s;text-align:center">
