@@ -66,6 +66,7 @@ sudo systemctl enable --now devsys-oauth2 devsys-portal devsys-tunnel
 
 echo "▶ Caddy（xcaddy 编译 DNS 插件 + 起容器）"
 export CADDY_DNS_MODULE="$(cat caddy-module.txt 2>/dev/null || echo github.com/caddy-dns/alidns)"
-docker compose up -d --build
+# docker 需 root：以 root 跑 compose，既能连 daemon socket，又能读 600 的 control-plane.env（env_file）
+sudo bash -c "CADDY_DNS_MODULE='$CADDY_DNS_MODULE' docker compose up -d --build"
 
 echo "✓ 网关安装完成： portal=$(systemctl is-active devsys-portal) oauth2=$(systemctl is-active devsys-oauth2) tunnel=$(systemctl is-active devsys-tunnel)"
