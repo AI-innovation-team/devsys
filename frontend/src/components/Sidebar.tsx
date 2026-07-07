@@ -68,15 +68,7 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
 
       <div className="rail-foot" ref={footRef}>
         <button className="avatar-btn" onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }} aria-label="用户菜单">
-          <span className="avatar">
-            <svg className="avatar-logo" viewBox="0 0 72 72" aria-hidden="true">
-              <path className="al-arc" d="M 58,10 A 28,28 0 1,0 58,62" fill="none" stroke="currentColor" stroke-width="5.5" stroke-linecap="round"/>
-              <path d="M 52,20 A 16,16 0 1,0 52,52" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.28"/>
-              <circle className="al-dot" cx="58" cy="10" r="4.5" fill="currentColor"/>
-              <circle className="al-dot" cx="58" cy="62" r="4.5" fill="currentColor" style={{ animationDelay: '0.4s' }}/>
-              <circle className="al-dot" cx="36" cy="36" r="3" fill="currentColor" opacity="0.5" style={{ animationDelay: '0.8s' }}/>
-            </svg>
-          </span>
+          <span className="avatar">{(user || "·").slice(0, 1)}</span>
           <div className="avatar-meta">
             <div className="avatar-name">{user || "…"}</div>
           </div>
