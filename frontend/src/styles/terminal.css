@@ -11,7 +11,8 @@
 }
 
 html, body, #root { height: 100%; }
-.tpage { display: flex; flex-direction: column; height: 100vh; background: var(--canvas); }
+/* position:fixed + JS 锁 VisualViewport 高度：软键盘弹出时整页贴合可视区，底部键条浮在键盘上。 */
+.tpage { position: fixed; top: 0; left: 0; right: 0; display: flex; flex-direction: column; height: 100vh; background: var(--canvas); overflow: hidden; }
 .tbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 11px 18px; background: var(--surface); border-bottom: 1px solid var(--border-subtle); }
 .tbar .l { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .tbar .back { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 8px; color: var(--text-muted); border: 1px solid var(--border-subtle); background: var(--surface); }
