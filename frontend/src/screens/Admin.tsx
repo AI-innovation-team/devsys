@@ -3,116 +3,146 @@ import { useCallback, useEffect, useState } from "react";
 import { AdminSrv, AdminUser, api, AuditLine, Me } from "../api";
 import { Icon } from "../icons";
 
-// 管理员界面（仅 config.yaml oauth.admins 可见）。
+type Tab = "users" | "servers" | "whitelist" | "logs";
+const TABS: { k: Tab; label: string; icon: string }[] = [
+  { k: "users", label: "用户", icon: "user" },
+  { k: "servers", label: "服务器", icon: "server" },
+  { k: "whitelist", label: "GitHub 白名单", icon: "shield" },
+  { k: "logs", label: "日志", icon: "logs" },
+];
+
+// 管理员界面（仅 config.yaml oauth.admins 可见）。先点 tab → 再看/编辑。
 export function Admin({ me }: { me: Me | null }) {
+  const [tab, setTab] = useState<Tab>("users");
   return (
     <div className="wrap">
       <header className="page-head">
         <h1>管理</h1>
-        <p style={{ margin: "4px 0 0", color: "var(--text-faint)", fontSize: 14 }}>
-          服务器 · 用户 · 权限 · 日志　（管理员：{me?.user}）
-        </p>
+        <p style={{ margin: "4px 0 0", color: "var(--text-faint)", fontSize: 14 }}>管理员：{me?.user}</p>
       </header>
-      <UsersSection />
-      <EmailSection />
-      <ServersSection />
-      <WhitelistSection />
-      <LogsSection />
+      <nav className="admin-tabs">
+        {TABS.map((t) => (
+          <button key={t.k} className={tab === t.k ? "on" : ""} onClick={() => setTab(t.k)}>
+            <Icon name={t.icon} />{t.label}
+          </button>
+        ))}
+      </nav>
+      {tab === "users" && <UsersTab />}
+      {tab === "servers" && <ServersTab />}
+      {tab === "whitelist" && <WhitelistTab />}
+      {tab === "logs" && <LogsTab />}
     </div>
   );
 }
 
 const fmtTime = (ts: number) => new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false });
 
-// ── 用户总览（只读）────────────────────────────────────────────
-function UsersSection() {
+// ══ 用户 ══════════════════════════════════════════════════════
+function UsersTab() {
   const [users, setUsers] = useState<AdminUser[] | null>(null);
+  const [adding, setAdding] = useState(false);
   const load = useCallback(async () => {
     try { setUsers((await api.admin.users()).users); } catch { setUsers([]); }
   }, []);
   useEffect(() => { load(); }, [load]);
+
   return (
     <section className="set-sec">
-      <div className="set-h"><h2>用户总览</h2></div>
+      <div className="set-h" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <h2>用户</h2>
+        <button className="btn secondary sm" onClick={() => setAdding((a) => !a)}><Icon name="plus" />添加邮箱用户</button>
+      </div>
+      {adding && <AddEmailCard onDone={() => { setAdding(false); load(); }} />}
       {users === null ? <p className="save-note">加载中…</p> : (
-        <div className="ws-list">
+        <div className="cards">
           {users.length === 0 && <div className="ws-empty">暂无用户</div>}
-          {users.map((u) => (
-            <div className="ws-row" key={u.user}>
-              <div className="ws-info">
-                <span className={"ws-dot" + (u.whitelisted ? " on" : "")} />
-                <span className="ws-name">{u.user}</span>
-                <span className="badge">{u.kind === "email" ? "邮箱" : "GitHub"}</span>
-                {u.is_admin && <span className="badge accent"><Icon name="shield" />管理员</span>}
-                {u.servers.length > 0 && <span className="badge ok">{u.servers.length} 台凭据</span>}
-              </div>
-            </div>
-          ))}
+          {users.map((u) => <UserCard key={u.user} u={u} reload={load} />)}
         </div>
       )}
     </section>
   );
 }
 
-// ── 邮箱用户管理（增删，会重启 oauth2）───────────────────────────
-function EmailSection() {
-  const [users, setUsers] = useState<AdminUser[] | null>(null);
+function UserCard({ u, reload }: { u: AdminUser; reload: () => void }) {
+  const isEmail = u.kind === "email";
+  const [open, setOpen] = useState(false);
+  const [pw, setPw] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const reset = async () => {
+    if (pw.length < 8) { setNote("密码至少 8 位"); return; }
+    setBusy(true); setNote("重置中…（重启认证约几秒）");
+    try { await api.admin.addEmail(u.user, pw); setNote("已重置 ✓"); setPw(""); } catch (e) { setNote("失败：" + String(e)); }
+    setBusy(false);
+  };
+  const del = async () => {
+    if (!confirm(`删除邮箱用户 ${u.user}？该账号将无法登录。`)) return;
+    setBusy(true); setNote("删除中…");
+    try { await api.admin.delEmail(u.user); reload(); } catch (e) { setNote("失败：" + String(e)); setBusy(false); }
+  };
+
+  return (
+    <article className={"card" + (open ? " open" : "")}>
+      <button className="cfg-head tog" onClick={() => isEmail && setOpen((o) => !o)} aria-expanded={open} style={{ cursor: isEmail ? "pointer" : "default" }}>
+        <div className="srv-title">
+          <span className={"srv-dot" + (u.whitelisted ? " ok" : "")} />
+          <span className="srv-name">{u.user}</span>
+          <span className="badge">{isEmail ? "邮箱" : "GitHub"}</span>
+          {u.is_admin && <span className="badge accent"><Icon name="shield" />管理员</span>}
+          {u.servers.length > 0 && <span className="badge ok">{u.servers.length} 台凭据</span>}
+        </div>
+        {isEmail && <div className="tog-r"><Icon name="chevron" className="chev" /></div>}
+      </button>
+      {open && isEmail && (
+        <div className="cfg-body">
+          <div className="row2">
+            <div className="field"><label>重置密码（≥8 位）</label>
+              <div className="inp"><Icon name="lock" /><input type="text" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="输入新密码" autoComplete="off" /></div>
+            </div>
+          </div>
+          <div className="cred-foot">
+            <button className="btn primary sm" disabled={busy} onClick={reset}><Icon name="save" />重置密码</button>
+            <button className="btn subtle sm" disabled={busy} onClick={del}><Icon name="trash" />删除用户</button>
+            <span className="save-note">{note}　<span style={{ color: "var(--text-faint)" }}>操作会重启认证（已登录不受影响）</span></span>
+          </div>
+        </div>
+      )}
+    </article>
+  );
+}
+
+function AddEmailCard({ onDone }: { onDone: () => void }) {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
-  const load = useCallback(async () => {
-    try { setUsers((await api.admin.users()).users.filter((u) => u.kind === "email")); } catch { setUsers([]); }
-  }, []);
-  useEffect(() => { load(); }, [load]);
-
   const add = async () => {
     if (!email.includes("@")) { setNote("请输入有效邮箱"); return; }
     if (pw.length < 8) { setNote("密码至少 8 位"); return; }
     setBusy(true); setNote("保存中…（重启认证约几秒）");
-    try { await api.admin.addEmail(email, pw); setNote("已添加 ✓"); setEmail(""); setPw(""); await load(); }
-    catch (e) { setNote("失败：" + String(e)); }
-    setBusy(false);
+    try { await api.admin.addEmail(email, pw); onDone(); } catch (e) { setNote("失败：" + String(e)); setBusy(false); }
   };
-  const del = async (m: string) => {
-    if (!confirm(`删除邮箱用户 ${m}？该账号将无法登录。`)) return;
-    setNote("删除中…");
-    try { await api.admin.delEmail(m); setNote("已删除 ✓"); await load(); }
-    catch (e) { setNote("失败：" + String(e)); }
-  };
-
   return (
-    <section className="set-sec">
-      <div className="set-h"><h2>邮箱用户</h2></div>
-      <div className="card"><div className="cfg-body">
-        <div className="row2">
-          <div className="field"><label>邮箱</label>
-            <div className="inp"><Icon name="user" /><input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="user@example.com" autoComplete="off" /></div>
-          </div>
-          <div className="field"><label>初始密码（≥8 位）</label>
-            <div className="inp"><Icon name="lock" /><input type="text" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="至少 8 位" autoComplete="off" /></div>
-          </div>
+    <div className="card open" style={{ marginBottom: 12 }}><div className="cfg-body">
+      <div className="row2">
+        <div className="field"><label>邮箱</label>
+          <div className="inp"><Icon name="user" /><input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="user@example.com" autoComplete="off" /></div>
         </div>
-        <div className="cred-foot">
-          <button className="btn primary sm" disabled={busy} onClick={add}><Icon name="plus" />添加 / 重置</button>
-          <span className="save-note">{note}　<span style={{ color: "var(--text-faint)" }}>增删会重启认证（已登录不受影响）</span></span>
+        <div className="field"><label>初始密码（≥8 位）</label>
+          <div className="inp"><Icon name="lock" /><input type="text" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="至少 8 位" autoComplete="off" /></div>
         </div>
-      </div></div>
-      <div className="ws-list" style={{ marginTop: 12 }}>
-        {users?.length === 0 && <div className="ws-empty">还没有邮箱用户</div>}
-        {users?.map((u) => (
-          <div className="ws-row" key={u.user}>
-            <div className="ws-info"><span className="ws-dot on" /><span className="ws-name">{u.user}</span></div>
-            <div className="ws-acts"><button className="btn subtle sm" onClick={() => del(u.user)}><Icon name="trash" /></button></div>
-          </div>
-        ))}
       </div>
-    </section>
+      <div className="cred-foot">
+        <button className="btn primary sm" disabled={busy} onClick={add}><Icon name="plus" />添加</button>
+        <span className="save-note">{note}</span>
+      </div>
+    </div></div>
   );
 }
 
-// ── 服务器增删改（运行时真源，即时生效）─────────────────────────
-function ServersSection() {
+// ══ 服务器 ════════════════════════════════════════════════════
+function ServersTab() {
   const [rows, setRows] = useState<AdminSrv[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
@@ -134,29 +164,59 @@ function ServersSection() {
 
   return (
     <section className="set-sec">
-      <div className="set-h"><h2>服务器</h2></div>
-      <div className="card"><div className="cfg-body">
-        {rows === null ? <p className="save-note">加载中…</p> : rows.map((s, i) => (
-          <div className="row2" key={i} style={{ gridTemplateColumns: "1fr 1.4fr .7fr 1fr auto", gap: 8, alignItems: "end", marginBottom: 8 }}>
-            <div className="field"><label>名称</label><div className="inp"><input value={s.name} onChange={(e) => set(i, "name", e.target.value)} placeholder="turing" /></div></div>
-            <div className="field"><label>主机</label><div className="inp"><input value={s.host} onChange={(e) => set(i, "host", e.target.value)} placeholder="172.16.x.x" /></div></div>
-            <div className="field"><label>端口</label><div className="inp"><input value={s.port} onChange={(e) => set(i, "port", e.target.value)} /></div></div>
-            <div className="field"><label>跳板（可选）</label><div className="inp"><input value={s.jump || ""} onChange={(e) => set(i, "jump", e.target.value)} placeholder="另一台的名称" /></div></div>
-            <button className="btn subtle sm" onClick={() => delRow(i)} title="删除"><Icon name="trash" /></button>
-          </div>
-        ))}
-        <div className="cred-foot">
-          <button className="btn secondary sm" onClick={addRow}><Icon name="plus" />添加一台</button>
-          <button className="btn primary sm" disabled={busy} onClick={save}><Icon name="save" />保存全部</button>
-          <span className="save-note">{note}</span>
+      <div className="set-h" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <h2>服务器</h2>
+        <button className="btn secondary sm" onClick={addRow}><Icon name="plus" />添加一台</button>
+      </div>
+      {rows === null ? <p className="save-note">加载中…</p> : (
+        <div className="cards">
+          {rows.length === 0 && <div className="ws-empty">还没有服务器</div>}
+          {rows.map((s, i) => <ServerCard key={i} s={s} set={(k, v) => set(i, k, v)} del={() => delRow(i)} />)}
         </div>
-      </div></div>
+      )}
+      <div className="cred-foot" style={{ marginTop: 14 }}>
+        <button className="btn primary sm" disabled={busy || rows === null} onClick={save}><Icon name="save" />保存全部</button>
+        <span className="save-note">{note}</span>
+      </div>
     </section>
   );
 }
 
-// ── GitHub 白名单（原地改 cfg + 重启）───────────────────────────
-function WhitelistSection() {
+function ServerCard({ s, set, del }: { s: AdminSrv; set: (k: keyof AdminSrv, v: string) => void; del: () => void }) {
+  const [open, setOpen] = useState(!s.name);  // 新增的空卡默认展开
+  return (
+    <article className={"card" + (open ? " open" : "")}>
+      <button className="cfg-head tog" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <div className="srv-title">
+          <span className="srv-dot ok" />
+          <span className="srv-name">{s.name || "（新服务器）"}</span>
+          {s.host && <span className="badge">{s.host}:{s.port}</span>}
+          {s.jump && <span className="badge">via {s.jump}</span>}
+        </div>
+        <div className="tog-r"><Icon name="chevron" className="chev" /></div>
+      </button>
+      {open && (
+        <div className="cfg-body">
+          <div className="row2">
+            <div className="field"><label>名称</label><div className="inp"><Icon name="server" /><input value={s.name} onChange={(e) => set("name", e.target.value)} placeholder="turing" /></div></div>
+            <div className="field"><label>主机 IP</label><div className="inp"><Icon name="network" /><input value={s.host} onChange={(e) => set("host", e.target.value)} placeholder="172.16.x.x" /></div></div>
+          </div>
+          <div className="row2">
+            <div className="field"><label>SSH 端口</label><div className="inp"><input value={s.port} onChange={(e) => set("port", e.target.value)} /></div></div>
+            <div className="field"><label>跳板（可选，填另一台的名称）</label><div className="inp"><input value={s.jump || ""} onChange={(e) => set("jump", e.target.value)} placeholder="留空=直连" /></div></div>
+          </div>
+          <div className="cred-foot">
+            <button className="btn subtle sm" onClick={del}><Icon name="trash" />删除这台</button>
+            <span className="save-note" style={{ color: "var(--text-faint)" }}>改完记得点下方「保存全部」</span>
+          </div>
+        </div>
+      )}
+    </article>
+  );
+}
+
+// ══ GitHub 白名单 ═════════════════════════════════════════════
+function WhitelistTab() {
   const [list, setList] = useState<string[] | null>(null);
   const [add, setAdd] = useState("");
   const [busy, setBusy] = useState(false);
@@ -172,38 +232,39 @@ function WhitelistSection() {
     catch (e) { setNote("失败：" + String(e)); }
     setBusy(false);
   };
-  const onAdd = () => {
-    const u = add.trim();
-    if (!u || list!.includes(u)) { setAdd(""); return; }
-    commit([...list!, u]); setAdd("");
-  };
+  const onAdd = () => { const u = add.trim(); if (!u || list!.includes(u)) { setAdd(""); return; } commit([...list!, u]); setAdd(""); };
   const onDel = (u: string) => { if (confirm(`从白名单移除 GitHub 用户 ${u}？`)) commit(list!.filter((x) => x !== u)); };
 
   return (
     <section className="set-sec">
       <div className="set-h"><h2>GitHub 白名单</h2></div>
-      <div className="card"><div className="cfg-body">
-        <div className="cred-foot" style={{ marginBottom: 8 }}>
-          <div className="inp" style={{ flex: 1 }}><Icon name="user" /><input value={add} onChange={(e) => setAdd(e.target.value)} placeholder="GitHub 用户名" autoComplete="off" onKeyDown={(e) => e.key === "Enter" && onAdd()} /></div>
-          <button className="btn primary sm" disabled={busy} onClick={onAdd}><Icon name="plus" />添加</button>
-        </div>
+      <div className="cred-foot" style={{ marginBottom: 12 }}>
+        <div className="inp" style={{ flex: 1, maxWidth: 360 }}><Icon name="user" /><input value={add} onChange={(e) => setAdd(e.target.value)} placeholder="GitHub 用户名" autoComplete="off" disabled={busy} onKeyDown={(e) => e.key === "Enter" && onAdd()} /></div>
+        <button className="btn primary sm" disabled={busy} onClick={onAdd}><Icon name="plus" />添加</button>
+        <span className="save-note">{note}</span>
+      </div>
+      {list === null ? <p className="save-note">加载中…</p> : (
         <div className="ws-list">
-          {list === null ? <p className="save-note">加载中…</p> : list.length === 0 ? <div className="ws-empty">白名单为空</div> : list.map((u) => (
+          {list.length === 0 ? <div className="ws-empty">白名单为空</div> : list.map((u) => (
             <div className="ws-row" key={u}>
               <div className="ws-info"><span className="ws-dot on" /><span className="ws-name">{u}</span></div>
-              <div className="ws-acts"><button className="btn subtle sm" onClick={() => onDel(u)}><Icon name="trash" /></button></div>
+              <div className="ws-acts"><button className="btn subtle sm" disabled={busy} onClick={() => onDel(u)}><Icon name="trash" /></button></div>
             </div>
           ))}
         </div>
-        <span className="save-note">{note}　<span style={{ color: "var(--text-faint)" }}>增删会重启认证（已登录不受影响）</span></span>
-      </div></div>
+      )}
+      <p className="save-note" style={{ color: "var(--text-faint)" }}>增删会重启认证，已登录用户不受影响。</p>
     </section>
   );
 }
 
-// ── 日志 ────────────────────────────────────────────────────────
+// ══ 日志 ══════════════════════════════════════════════════════
 const SRCS = [{ k: "audit", label: "操作/会话审计" }, { k: "oauth2", label: "登录认证" }, { k: "portal", label: "门户服务" }];
-function LogsSection() {
+const ACT_LABEL: Record<string, string> = {
+  add_email_user: "添加邮箱用户", del_email_user: "删除邮箱用户", save_servers: "保存服务器",
+  set_whitelist: "改白名单", ssh: "SSH 连接", vscode: "打开 VSCode", ws_new: "新建工作区",
+};
+function LogsTab() {
   const [src, setSrc] = useState("audit");
   const [lines, setLines] = useState<AuditLine[] | null>(null);
   const [text, setText] = useState<string | null>(null);
@@ -218,33 +279,45 @@ function LogsSection() {
 
   return (
     <section className="set-sec">
-      <div className="set-h"><h2>日志</h2></div>
-      <div className="card"><div className="cfg-body">
-        <div className="seg" style={{ marginBottom: 10 }}>
-          {SRCS.map((s) => <button key={s.k} className={src === s.k ? "on" : ""} onClick={() => setSrc(s.k)}>{s.label}</button>)}
-          <button onClick={() => load(src)} title="刷新" style={{ marginLeft: "auto" }}><Icon name="refresh" /></button>
-        </div>
-        {loading && <p className="save-note">加载中…</p>}
-        {lines && (
-          <div className="ws-list">
-            {lines.length === 0 && <div className="ws-empty">暂无记录</div>}
-            {lines.map((l, i) => (
-              <div className="ws-row" key={i}>
-                <div className="ws-info">
-                  <span className="ws-name">{l.action}</span>
-                  <span className="badge">{l.actor}</span>
-                  {"target" in l && <span className="badge">{String(l.target)}</span>}
-                  {"server" in l && <span className="badge accent">{String(l.server)}</span>}
-                </div>
-                <span className="save-note">{fmtTime(l.ts)}</span>
+      <div className="set-h" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <h2>日志</h2>
+        <button className="btn subtle sm" onClick={() => load(src)} title="刷新"><Icon name="refresh" />刷新</button>
+      </div>
+      <div className="seg" style={{ marginBottom: 12 }}>
+        {SRCS.map((s) => <button key={s.k} className={src === s.k ? "on" : ""} onClick={() => setSrc(s.k)}>{s.label}</button>)}
+      </div>
+      {loading && <p className="save-note">加载中…</p>}
+      {lines && (
+        <div className="ws-list">
+          {lines.length === 0 && <div className="ws-empty">暂无记录</div>}
+          {lines.map((l, i) => (
+            <div className="ws-row" key={i}>
+              <div className="ws-info">
+                <span className="ws-name">{ACT_LABEL[l.action] || l.action}</span>
+                <span className="badge"><Icon name="user" />{l.actor}</span>
+                {"server" in l && <span className="badge accent"><Icon name="server" />{String(l.server)}</span>}
+                {"target" in l && <span className="badge">{String(l.target)}</span>}
               </div>
-            ))}
-          </div>
-        )}
-        {text != null && (
-          <pre style={{ margin: 0, maxHeight: 420, overflow: "auto", fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.5, color: "var(--text-body)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{text}</pre>
-        )}
-      </div></div>
+              <span className="save-note" style={{ flexShrink: 0 }}>{fmtTime(l.ts)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {text != null && (
+        <div className="logbox">
+          {text.split("\n").filter((x) => x.trim()).map((ln, i) => {
+            const m = ln.match(/^(\S+)\s+\S+\s+\S+\[\d+\]:\s*(.*)$/);
+            const time = m ? m[1].replace(/\+\d{4}$/, "").replace("T", " ") : "";
+            const msg = m ? m[2] : ln;
+            return (
+              <div className="logline" key={i}>
+                {time && <span className="t">{time}</span>}
+                <span className="m">{msg}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
