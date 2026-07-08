@@ -46,17 +46,26 @@ function UsersTab() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  const gh = (users || []).filter((u) => u.kind === "github");
+  const em = (users || []).filter((u) => u.kind === "email");
   return (
     <section className="set-sec">
-      <div className="set-h" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <h2>用户</h2>
-        <button className="btn secondary sm" onClick={() => setAdding((a) => !a)}><Icon name="plus" />添加邮箱用户</button>
-      </div>
-      {adding && <AddEmailCard onDone={() => { setAdding(false); load(); }} />}
+      <div className="set-h"><h2>GitHub 用户</h2></div>
       {users === null ? <p className="save-note">加载中…</p> : (
         <div className="cards">
-          {users.length === 0 && <div className="ws-empty">暂无用户</div>}
-          {users.map((u) => <UserCard key={u.user} u={u} reload={load} />)}
+          {gh.length === 0 && <div className="ws-empty">暂无 GitHub 用户</div>}
+          {gh.map((u) => <UserCard key={u.user} u={u} reload={load} />)}
+        </div>
+      )}
+      <div className="set-h" style={{ justifyContent: "space-between", alignItems: "center", marginTop: 26 }}>
+        <h2>账密用户</h2>
+        <button className="btn secondary sm" onClick={() => setAdding((a) => !a)}><Icon name="plus" />添加账密用户</button>
+      </div>
+      {adding && <AddEmailCard onDone={() => { setAdding(false); load(); }} />}
+      {users !== null && (
+        <div className="cards">
+          {em.length === 0 && <div className="ws-empty">暂无账密用户</div>}
+          {em.map((u) => <UserCard key={u.user} u={u} reload={load} />)}
         </div>
       )}
     </section>
@@ -279,12 +288,11 @@ function LogsTab() {
 
   return (
     <section className="set-sec">
-      <div className="set-h" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <h2>日志</h2>
-        <button className="btn subtle sm" onClick={() => load(src)} title="刷新"><Icon name="refresh" />刷新</button>
-      </div>
-      <div className="seg" style={{ marginBottom: 12 }}>
-        {SRCS.map((s) => <button key={s.k} className={src === s.k ? "on" : ""} onClick={() => setSrc(s.k)}>{s.label}</button>)}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <div className="seg">
+          {SRCS.map((s) => <button key={s.k} className={src === s.k ? "on" : ""} onClick={() => setSrc(s.k)}>{s.label}</button>)}
+        </div>
+        <button className="btn subtle sm" onClick={() => load(src)} title="刷新" style={{ marginLeft: "auto" }}><Icon name="refresh" /></button>
       </div>
       {loading && <p className="save-note">加载中…</p>}
       {lines && (
