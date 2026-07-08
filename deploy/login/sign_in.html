@@ -59,6 +59,12 @@ body{margin:0;font-family:var(--font-sans);color:var(--text-body);background:var
 .cta-accent:hover{background:var(--accent-hover)}
 .cta-stone{background:var(--stone-900);color:var(--cream);box-shadow:0 8px 22px -12px rgba(42,42,40,.5)}
 form{width:100%;margin:0;display:flex;flex-direction:column;gap:10px}
+.pwerr{display:none;align-items:center;justify-content:center;gap:7px;margin:0;padding:10px 13px;
+  font-size:14px;font-weight:600;color:var(--terracotta-600);
+  background:rgba(189,93,58,.1);border:1px solid rgba(189,93,58,.34);border-radius:10px}
+.pwerr svg{flex-shrink:0}
+.pwerr.show{display:flex;animation:shake .42s cubic-bezier(.36,.07,.19,.97)}
+@keyframes shake{10%,90%{transform:translateX(-1px)}20%,80%{transform:translateX(2px)}30%,50%,70%{transform:translateX(-4px)}40%,60%{transform:translateX(4px)}}
 .or{display:flex;align-items:center;gap:12px;color:var(--text-faint);font-size:12px;margin:4px 0}
 .or::before,.or::after{content:"";flex:1;height:1px;background:var(--border)}
 .foot{margin-top:24px;font-size:12px;color:var(--text-faint);text-align:center;line-height:1.6}
@@ -88,7 +94,7 @@ form{width:100%;margin:0;display:flex;flex-direction:column;gap:10px}
       {{ if .CustomLogin }}
       <form id="pwform" method="POST" action="{{.ProxyPrefix}}/sign_in">
         <input type="hidden" name="rd" value="{{.Redirect}}">
-        <p id="pwerr" style="display:none;margin:0;font-size:13px;color:var(--terracotta-600);text-align:center">邮箱或密码错误</p>
+        <div id="pwerr" class="pwerr" role="alert"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><span id="pwerrtxt">邮箱或密码错误</span></div>
         <input class="fld" name="username" type="email" placeholder="邮箱" autocomplete="username" required>
         <input class="fld" name="password" type="password" placeholder="密码" autocomplete="current-password" required>
         <button type="submit" class="cta cta-accent">邮箱登录</button>
@@ -125,9 +131,11 @@ form{width:100%;margin:0;display:flex;flex-direction:column;gap:10px}
 // 故拦截提交用 fetch 判断：重定向=成功→跳转；401/403=凭据错→显示提示。
 (function(){
   var f=document.getElementById('pwform'); if(!f) return;
-  var err=document.getElementById('pwerr');
+  var err=document.getElementById('pwerr'), txt=document.getElementById('pwerrtxt');
+  function show(msg){ txt.textContent=msg; err.classList.remove('show'); void err.offsetWidth; err.classList.add('show'); }
+  function hide(){ err.classList.remove('show'); }
   f.addEventListener('submit',function(e){
-    e.preventDefault(); err.style.display='none';
+    e.preventDefault(); hide();
     var btn=f.querySelector('button[type=submit]'); if(btn) btn.disabled=true;
     var reset=function(){ if(btn) btn.disabled=false; };
     fetch(f.action,{method:'POST',body:new URLSearchParams(new FormData(f)),
@@ -135,10 +143,9 @@ form{width:100%;margin:0;display:flex;flex-direction:column;gap:10px}
       redirect:'follow',credentials:'same-origin'})
     .then(function(res){
       if(res.redirected){ window.location.href=res.url; return; }
-      err.textContent=(res.status===401||res.status===403)?'邮箱或密码错误':'登录失败，请重试';
-      err.style.display='block'; reset();
+      show((res.status===401||res.status===403)?'邮箱或密码错误':'登录失败，请重试'); reset();
     })
-    .catch(function(){ err.textContent='网络错误，请重试'; err.style.display='block'; reset(); });
+    .catch(function(){ show('网络错误，请重试'); reset(); });
   });
 })();
 </script>
