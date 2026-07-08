@@ -108,13 +108,20 @@ def main(build_dir: str):
     (out / "control-plane.env").write_text("\n".join(envlines) + "\n")
 
     # ── oauth2-proxy.cfg ──
+    oauth_id = env.get("OAUTH_CLIENT_ID", "")
+    oauth_secret = env.get("OAUTH_CLIENT_SECRET", "")
+    # 防线：provider=github 却缺凭据时中止——否则渲染出空 client_id，覆盖到网关后
+    # oauth2-proxy 启动校验失败、整个认证层瘫痪（2026-07 曾因 .env 键名写错触发此事故）。
+    if cfg["oauth"].get("provider") == "github" and not (oauth_id and oauth_secret):
+        sys.exit("✗ oauth.provider=github 但 .env 缺 OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET，"
+                 "拒绝生成空 oauth2-proxy.cfg（会导致认证层瘫痪）。请在 .env 补齐这两个键。")
     users = ", ".join(f'"{u}"' for u in cfg["oauth"].get("github_users", []))
     # 邮箱登录（htpasswd）：oauth2-proxy 拒绝空 htpasswd，install.sh 会在无用户时自动摘除。
     htpasswd_cfg = (f'htpasswd_file = "{home}/gateway/oauth2/htpasswd"\ndisplay_htpasswd_form = true\n'
                     if cfg["oauth"].get("email_login") else "")
     (out / "oauth2-proxy.cfg").write_text(f"""provider = "github"
-client_id = "{env.get('OAUTH_CLIENT_ID', '')}"
-client_secret = "{env.get('OAUTH_CLIENT_SECRET', '')}"
+client_id = "{oauth_id}"
+client_secret = "{oauth_secret}"
 cookie_secret = "{cookie}"
 http_address = "127.0.0.1:4180"
 reverse_proxy = true
