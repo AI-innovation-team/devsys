@@ -4,6 +4,7 @@
 改白名单或邮箱用户会重启 oauth2（几秒新登录短断，已登录 cookie 不受影响）。
 """
 import asyncio
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -150,18 +151,24 @@ async def admin_set_whitelist(request: Request, admin: str = Depends(require_adm
 
 # ── 日志（audit 门户自写；oauth2/portal 走受限免密 journalctl）──
 @router.get("/api/admin/logs")
-async def admin_logs(admin: str = Depends(require_admin), src: str = "audit", n: int = 200):
-    n = max(1, min(int(n), 1000))
+async def admin_logs(admin: str = Depends(require_admin), src: str = "audit", n: int = 30):
+    n = max(1, min(int(n), 500))
     if src == "audit":
         return {"src": src, "lines": audit.tail(n)}
     if src in ("oauth2", "portal"):
         unit = "devsys-oauth2" if src == "oauth2" else "devsys-portal"
+        # portal 全是 uvicorn 访问日志，要滤掉噪音后取最新 n，故多拉一些
+        fetch = max(n * 12, 400) if src == "portal" else n
         p = await asyncio.create_subprocess_exec(
-            "sudo", "-n", "journalctl", "-u", unit, "-n", str(n),
+            "sudo", "-n", "journalctl", "-u", unit, "-n", str(fetch),
             "--no-pager", "--output=short-iso",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         so, se = await p.communicate()
         if p.returncode != 0:
             raise HTTPException(500, "读取日志失败：" + se.decode()[:140])
-        return {"src": src, "text": so.decode()}
+        lines = [ln for ln in so.decode().splitlines() if ln.strip()]
+        if src == "portal":
+            # 滤掉 uvicorn 常规访问日志（成功的 GET/HEAD），只留写操作/错误/服务事件
+            lines = [ln for ln in lines if not re.search(r'"(GET|HEAD) [^"]*" (2\d\d|3\d\d)\b', ln)]
+        return {"src": src, "text": "\n".join(lines[-n:])}
     raise HTTPException(400, "未知日志源")

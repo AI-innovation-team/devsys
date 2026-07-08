@@ -281,7 +281,7 @@ function LogsTab() {
   const [loading, setLoading] = useState(false);
   const load = useCallback(async (s: string) => {
     setLoading(true); setLines(null); setText(null);
-    try { const r = await api.admin.logs(s, 200); setLines(r.lines || null); setText(r.text ?? null); }
+    try { const r = await api.admin.logs(s, 30); setLines(r.lines || null); setText(r.text ?? null); }
     catch (e) { setText("读取失败：" + String(e)); }
     setLoading(false);
   }, []);
