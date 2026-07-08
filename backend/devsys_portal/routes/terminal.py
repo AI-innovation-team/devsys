@@ -7,6 +7,7 @@ import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from .. import audit
 from ..auth import check_user
 from ..ssh import ssh_connect
 from ..tmux import attach_cmd, ok_name
@@ -25,6 +26,7 @@ async def ws_ssh(ws: WebSocket, server: str):
     try:
         user = check_user(ws.headers.get("x-auth-request-user"))
         conn = await ssh_connect(user, server)
+        audit.record(user, "ssh", server=server, ws=wsname or "")
     except Exception as e:
         await ws.send_text(f"\r\n[devsys] {e}\r\n")
         await ws.close()

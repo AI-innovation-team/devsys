@@ -4,6 +4,7 @@ import shlex
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from .. import audit
 from ..auth import current_user
 from ..servers import find_server, servers
 from ..storage import load_meta, secret_path
@@ -44,6 +45,7 @@ async def new_ws(request: Request, user: str = Depends(current_user)):
         await run(user, server, f"{TMUX} new-session -d -s {shlex.quote(name)} 2>&1 || true")
     except Exception as e:
         raise HTTPException(502, str(e)[:160])
+    audit.record(user, "ws_new", server=server, ws=name)
     return {"ok": True}
 
 

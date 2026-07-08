@@ -10,6 +10,7 @@ from fastapi import (APIRouter, Depends, HTTPException, Request, WebSocket)
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
+from .. import audit
 from ..auth import check_user, current_user
 from ..servers import find_server
 from ..vscode import drop_session, ensure_codeserver
@@ -34,6 +35,7 @@ async def enter(server: str, user: str = Depends(current_user)):
     except Exception as e:
         return HTMLResponse(f"<pre style='color:#eee;background:#111;padding:20px'>"
                             f"启动 VS Code 失败：{e}</pre>", status_code=500)
+    audit.record(user, "vscode", server=server)
     return RedirectResponse(url=f"/vscode/{server}/", status_code=302)
 
 
