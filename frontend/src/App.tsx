@@ -23,9 +23,8 @@ function restoreView(): View {
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [view, setViewState] = useState<View>(restoreView);
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    try { return localStorage.getItem("devsys.rail") === "1"; } catch { return false; }
-  });
+  // 侧栏默认收起、不记忆：每次进入都收起，展开只在当前会话内有效。
+  const [collapsed, setCollapsed] = useState<boolean>(true);
   const [theme, setThemeState] = useState<Theme>(
     () => (document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light"),
   );
@@ -61,13 +60,7 @@ export function App() {
     try { localStorage.setItem("devsys.theme", t); } catch {}
     setThemeState(t);
   };
-  const toggleCollapse = () => {
-    setCollapsed((c) => {
-      const n = !c;
-      try { localStorage.setItem("devsys.rail", n ? "1" : "0"); } catch {}
-      return n;
-    });
-  };
+  const toggleCollapse = () => setCollapsed((c) => !c);
 
   // 打开某篇文档（slug 为空串 = 文档首页）；侧栏「文档」按钮即 openDoc("")
   const openDoc = (slug: string) => {
