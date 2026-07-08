@@ -81,6 +81,17 @@ do_gateway() {
     | ssh "$RELAY_SSH" "sudo RELAY_USER=$(printf %q "$RELAY_USER") bash ~/relay/authorize.sh"
 }
 
+# 回拉：把网关运行时真源（管理界面改过的 servers / GitHub 白名单）文本级回填 config.yaml，
+# 保持配置可版本化。只改这两段、保住全文注释。
+do_pull() {
+  log "回拉运行时真源 ← $GW_SSH"
+  mkdir -p build/gateway
+  scp -q "$GW_SSH:~/gateway/data/servers.json" build/gateway/servers.runtime.json
+  scp -q "$GW_SSH:~/gateway/oauth2/oauth2-proxy.cfg" build/gateway/oauth2.runtime.cfg
+  python3 scripts/pull.py build/gateway/servers.runtime.json build/gateway/oauth2.runtime.cfg config.yaml
+  log "已回填 config.yaml —— git 里看不到（gitignore），用 diff 或直接查看确认"
+}
+
 case "$STEP" in
   check)   log "配置检查（不连远程）"
            echo "对外    : https://$DOMAIN:$PUBLIC_PORT"
@@ -91,8 +102,9 @@ case "$STEP" in
   build)   do_build ;;
   relay)   do_relay ;;
   docs)    do_docs; log "文档已同步 ✅（刷新网页即生效）" ;;
+  pull)    do_pull ;;
   gateway) do_render; do_gateway ;;
   all)     do_render; do_build; do_relay; do_gateway
            log "完成 ✅  浏览器打开 https://$DOMAIN:$PUBLIC_PORT" ;;
-  *) echo "用法: ./deploy.sh [all|render|build|relay|gateway|docs|check]"; exit 1 ;;
+  *) echo "用法: ./deploy.sh [all|render|build|relay|gateway|docs|pull|check]"; exit 1 ;;
 esac
