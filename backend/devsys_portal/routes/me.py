@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends
 
 from ..auth import current_user
+from ..config import ADMINS
 from ..htpasswd import is_email_user
 from ..servers import servers
 from ..storage import load_meta, secret_path
@@ -19,4 +20,4 @@ def me(user: str = Depends(current_user)):
                     "username": m.get("username", ""),
                     "auth": m.get("auth", "password"),
                     "has_secret": secret_path(user, s["name"]).exists()})
-    return {"user": user, "email_login": is_email_user(user), "servers": out}
+    return {"user": user, "email_login": is_email_user(user), "is_admin": user in ADMINS, "servers": out}

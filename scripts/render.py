@@ -80,6 +80,7 @@ def main(build_dir: str):
     gw = cfg["gateway"]
     home = gw["home"].rstrip("/")
     relay = cfg["relay"]
+    admins = ",".join(cfg["oauth"].get("admins", []))
     provider = cfg["dns"]["provider"]
     if provider not in DNS_BLOCKS:
         sys.exit(f"✗ 未内置 dns.provider={provider}，请在 scripts/render.py 的 DNS_BLOCKS 里补一个块")
@@ -150,10 +151,11 @@ Wants=network-online.target
 User={gw['user']}
 Environment=HOME={home}
 Environment=DEVSYS_DATA={home}/gateway/data
-Environment=DEVSYS_SERVERS=/etc/devsys/servers.json
+Environment=DEVSYS_SERVERS={home}/gateway/data/servers.json
 Environment=DEVSYS_WEB={home}/gateway/web
 Environment=DEVSYS_DOCS={home}/gateway/docs
 Environment=DEVSYS_HTPASSWD={home}/gateway/oauth2/htpasswd
+Environment=DEVSYS_ADMINS={admins}
 WorkingDirectory={home}/gateway/backend
 ExecStart={home}/gateway/backend/.venv/bin/python -m uvicorn devsys_portal.main:app --host 127.0.0.1 --port 8090
 Restart=always

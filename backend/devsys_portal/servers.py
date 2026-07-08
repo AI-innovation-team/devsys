@@ -14,3 +14,9 @@ def servers() -> list:
 
 def find_server(name: str):
     return next((s for s in servers() if s["name"] == name), None)
+
+
+def write_servers(items: list) -> None:
+    """整表写回运行时真源（门户可写目录）。servers() 无缓存，写完即时生效。"""
+    SERVERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SERVERS_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2))

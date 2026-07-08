@@ -5,10 +5,13 @@ set -euo pipefail
 cd "$(dirname "$0")"
 GW="$PWD"
 
-echo "▶ /etc/devsys（servers.json + 环境）"
+echo "▶ /etc/devsys（环境）+ 运行时 servers 种子"
 sudo mkdir -p /etc/devsys
-sudo cp servers.json /etc/devsys/servers.json
 sudo cp control-plane.env /etc/devsys/control-plane.env
+# servers 真源迁到门户可写目录（~/gateway/data），首次种子、之后不覆盖——
+# 保留管理员在线增删的改动（同 htpasswd 的运行时可写模式）。
+mkdir -p data
+[ -f data/servers.json ] || cp servers.json data/servers.json
 
 echo "▶ oauth2-proxy 配置 + 登录模板"
 mkdir -p oauth2/templates

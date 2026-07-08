@@ -16,3 +16,5 @@ WEB_DIR = Path(os.environ.get("DEVSYS_WEB", BASE.parent.parent / "frontend" / "d
 HTPASSWD = Path(os.environ.get("DEVSYS_HTPASSWD", BASE.parent.parent / "oauth2" / "htpasswd"))
 # 改密后重启的 oauth2 服务名（需 zzl-zgh 免密 sudo restart，见 deploy/gateway/sudoers）
 OAUTH2_SERVICE = os.environ.get("DEVSYS_OAUTH2_SERVICE", "devsys-oauth2")
+# 管理员用户名集合（逗号分隔，由 deploy 从 config.yaml 的 oauth.admins 注入 DEVSYS_ADMINS）
+ADMINS = set(filter(None, os.environ.get("DEVSYS_ADMINS", "").split(",")))

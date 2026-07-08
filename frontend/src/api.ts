@@ -12,6 +12,7 @@ export interface Server {
 export interface Me {
   user: string;
   email_login: boolean;
+  is_admin: boolean;
   servers: Server[];
 }
 export interface WsSession {

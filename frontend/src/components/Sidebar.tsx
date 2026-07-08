@@ -11,6 +11,7 @@ interface Props {
   theme: Theme;
   toggleTheme: () => void;
   user: string;
+  isAdmin: boolean;
   onDocs: () => void; // 「文档」按钮：进入文档首页
 }
 
@@ -20,7 +21,7 @@ const NAV: { id: View; icon: string; label: string }[] = [
   { id: "docs", icon: "file", label: "文档" },
 ];
 
-export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggleTheme, user, onDocs }: Props) {
+export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggleTheme, user, isAdmin, onDocs }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const footRef = useRef<HTMLDivElement>(null);
 
@@ -76,6 +77,11 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
         </button>
         {menuOpen && (
           <div className="menu">
+            {isAdmin && (
+              <button onClick={() => { setView("admin"); setMenuOpen(false); }}>
+                <Icon name="shield" />管理
+              </button>
+            )}
             <button onClick={() => { setView("settings"); setMenuOpen(false); }}>
               <Icon name="settings" />设置
             </button>

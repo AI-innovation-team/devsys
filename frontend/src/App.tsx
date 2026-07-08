@@ -2,15 +2,16 @@ import { useCallback, useEffect, useState } from "react";
 
 import { api, breadcrumb, collectSlugs, DocNode, groupChildren, neighbors, Me } from "./api";
 import { Sidebar } from "./components/Sidebar";
+import { Admin } from "./screens/Admin";
 import { Docs } from "./screens/Docs";
 import { Servers } from "./screens/Servers";
 import { Settings } from "./screens/Settings";
 import { Workspaces } from "./screens/Workspaces";
 
-export type View = "workspaces" | "servers" | "docs" | "settings";
+export type View = "workspaces" | "servers" | "docs" | "settings" | "admin";
 export type Theme = "light" | "dark";
 
-const VIEWS: View[] = ["workspaces", "servers", "docs", "settings"];
+const VIEWS: View[] = ["workspaces", "servers", "docs", "settings", "admin"];
 
 function restoreView(): View {
   try {
@@ -79,12 +80,14 @@ export function App() {
         theme={theme}
         toggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
         user={me?.user || ""}
+        isAdmin={!!me?.is_admin}
         onDocs={() => openDoc("")}
       />
       <main className="main">
         {view === "workspaces" && <Workspaces goSettings={() => setView("settings")} />}
         {view === "servers" && <Servers me={me} goSettings={() => setView("settings")} />}
         {view === "settings" && <Settings me={me} reload={reload} theme={theme} setTheme={setTheme} />}
+        {view === "admin" && me?.is_admin && <Admin me={me} />}
         {view === "docs" && (
           <Docs
             tree={docTree}

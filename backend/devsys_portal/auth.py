@@ -4,7 +4,9 @@ Caddy 经 forward_auth 校验后把该头透传给门户；门户本身不做登
 """
 from typing import Optional
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
+
+from .config import ADMINS
 
 
 def check_user(u: Optional[str]) -> str:
@@ -19,3 +21,10 @@ def check_user(u: Optional[str]) -> str:
 def current_user(x_auth_request_user: Optional[str] = Header(default=None)) -> str:
     """FastAPI 依赖：HTTP 路由用 Depends(current_user)。"""
     return check_user(x_auth_request_user)
+
+
+def require_admin(user: str = Depends(current_user)) -> str:
+    """FastAPI 依赖：仅管理员（config.yaml oauth.admins）可访问的路由用 Depends(require_admin)。"""
+    if user not in ADMINS:
+        raise HTTPException(403, "需要管理员权限")
+    return user
