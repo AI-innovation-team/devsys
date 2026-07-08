@@ -341,3 +341,7 @@ code { font-family: var(--font-mono); font-size: .9em; background: var(--surface
 :root[data-theme="dark"] .logline:nth-child(even) { background: rgba(255, 255, 255, .02); }
 .logline .t { color: var(--text-faint); flex-shrink: 0; }
 .logline .m { color: var(--text-body); }
+
+.add-row { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 13px; margin-top: 12px; border: 1.5px dashed var(--border-default); border-radius: 12px; background: transparent; color: var(--text-muted); font-family: inherit; font-size: 14px; font-weight: 500; cursor: pointer; transition: border-color .15s, color .15s, background .15s; }
+.add-row:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.add-row .ic { width: 17px; height: 17px; }
