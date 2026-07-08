@@ -133,6 +133,26 @@ export interface SettingsBody {
   secret?: string;
 }
 
+export interface AdminUser {
+  user: string;
+  kind: "email" | "github";
+  is_admin: boolean;
+  whitelisted: boolean;
+  servers: string[];
+}
+export interface AdminSrv {
+  name: string;
+  host: string;
+  port: number;
+  jump?: string;
+}
+export interface AuditLine {
+  ts: number;
+  actor: string;
+  action: string;
+  [k: string]: unknown;
+}
+
 export const api = {
   me: () => j<Me>("/api/me"),
   saveSettings: (b: SettingsBody) => j<{ ok: boolean; has_secret: boolean }>("/api/settings", post(b)),
@@ -142,4 +162,14 @@ export const api = {
   killWs: (server: string, name: string) => j<{ ok: boolean }>("/api/workspaces/kill", post({ server, name })),
   docs: () => j<{ tree: DocNode[] }>("/api/docs"),
   doc: (slug: string) => j<Doc>("/api/docs/" + slug.split("/").map(encodeURIComponent).join("/")),
+  admin: {
+    users: () => j<{ users: AdminUser[]; admins: string[] }>("/api/admin/users"),
+    addEmail: (email: string, password: string) => j<{ ok: boolean }>("/api/admin/users/email", post({ email, password })),
+    delEmail: (email: string) => j<{ ok: boolean }>("/api/admin/users/email/delete", post({ email })),
+    servers: () => j<{ servers: AdminSrv[] }>("/api/admin/servers"),
+    saveServers: (servers: AdminSrv[]) => j<{ ok: boolean; servers: AdminSrv[] }>("/api/admin/servers", post({ servers })),
+    whitelist: () => j<{ github_users: string[] }>("/api/admin/whitelist"),
+    setWhitelist: (github_users: string[]) => j<{ ok: boolean; github_users: string[] }>("/api/admin/whitelist", post({ github_users })),
+    logs: (src: string, n = 200) => j<{ src: string; lines?: AuditLine[]; text?: string }>(`/api/admin/logs?src=${src}&n=${n}`),
+  },
 };

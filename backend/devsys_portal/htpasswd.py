@@ -26,13 +26,35 @@ def is_email_user(user: str) -> bool:
     return user in _entries()
 
 
+def email_users() -> list:
+    return sorted(_entries().keys())
+
+
+def _flush(ents: dict) -> None:
+    HTPASSWD.write_text(("\n".join(f"{k}:{v}" for k, v in ents.items()) + "\n") if ents else "")
+    HTPASSWD.chmod(0o600)
+
+
 def set_password(user: str, password: str) -> None:
     ents = _entries()
     if user not in ents:                       # 仅允许改已存在的邮箱账号（申请制不被绕过）
         raise RuntimeError("非邮箱登录账号，无法改密")
     ents[user] = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-    HTPASSWD.write_text("\n".join(f"{k}:{v}" for k, v in ents.items()) + "\n")
-    HTPASSWD.chmod(0o600)
+    _flush(ents)
+
+
+def add_email_user(email: str, password: str) -> None:
+    """管理员新增/重置邮箱用户（与 set_password 不同：允许新建）。"""
+    ents = _entries()
+    ents[email] = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    _flush(ents)
+
+
+def del_email_user(email: str) -> None:
+    ents = _entries()
+    if email in ents:
+        del ents[email]
+        _flush(ents)
 
 
 async def restart_oauth2() -> None:

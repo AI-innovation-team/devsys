@@ -57,9 +57,14 @@ sudo test -f /root/.ssh/relay_key || sudo ssh-keygen -t ed25519 -N '' -f /root/.
 echo "  隧道公钥（需登记到 relay，deploy.sh 会自动做）："
 sudo cat /root/.ssh/relay_key.pub | sed 's/^/    /'
 
-echo "▶ 门户自助改密：允许运行用户免密重启 oauth2"
+echo "▶ 门户运行权限：免密重启 oauth2（改密/白名单）+ 只读两个单元的日志（管理页）"
 SC=$(command -v systemctl)
-echo "$(whoami) ALL=(root) NOPASSWD: $SC restart devsys-oauth2" | sudo tee /etc/sudoers.d/devsys-portal >/dev/null
+JC=$(command -v journalctl)
+sudo tee /etc/sudoers.d/devsys-portal >/dev/null <<EOF
+$(whoami) ALL=(root) NOPASSWD: $SC restart devsys-oauth2
+$(whoami) ALL=(root) NOPASSWD: $JC -u devsys-oauth2 *
+$(whoami) ALL=(root) NOPASSWD: $JC -u devsys-portal *
+EOF
 sudo chmod 440 /etc/sudoers.d/devsys-portal
 
 echo "▶ systemd 服务"
