@@ -1,0 +1,19 @@
+<svg viewBox="0 0 240 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Hub logo, dark mode">
+  <rect width="240" height="240" rx="54" fill="#1D1D1F"/>
+  <g stroke="#FFFFFF" stroke-width="5" stroke-linecap="round">
+    <line x1="120" y1="120" x2="188" y2="120"/>
+    <line x1="120" y1="120" x2="86" y2="178.9"/>
+    <line x1="120" y1="120" x2="86" y2="61.1"/>
+  </g>
+  <circle cx="120" cy="120" r="13" fill="#FFFFFF"/>
+  <g fill="#FFFFFF">
+    <circle cx="188" cy="120" r="9.5"/>
+    <circle cx="86" cy="178.9" r="9.5"/>
+    <circle cx="86" cy="61.1" r="9.5"/>
+  </g>
+  <g fill="#8E8E93">
+    <circle cx="52" cy="120" r="6.5"/>
+    <circle cx="154" cy="178.9" r="6.5"/>
+    <circle cx="154" cy="61.1" r="6.5"/>
+  </g>
+</svg>

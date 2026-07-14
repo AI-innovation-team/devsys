@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { Theme } from "../App";
 import { api, Me, Server } from "../api";
+import { data } from "../data";
 import { Icon } from "../icons";
 
 interface Props {
@@ -49,17 +50,17 @@ function CredCard({ s, reload }: { s: Server; reload: () => Promise<void> | void
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
+    const secret = auth === "key" ? key : pw;
     setSaving(true);
     setNote("保存中…");
-    const secret = auth === "key" ? key : pw;
     try {
-      await api.saveSettings({ server: s.name, username, auth, ...(secret ? { secret } : {}) });
-      setNote("已保存 ✓");
+      await data.saveCredential({ server: s.name, username, auth, ...(secret ? { secret } : {}) });
       setPw("");
       setKey("");
       await reload();
-    } catch {
-      setNote("保存失败");
+      setNote("已保存 ✓");
+    } catch (e) {
+      setNote("保存失败：" + (e instanceof Error ? e.message : String(e)));
     }
     setSaving(false);
   };

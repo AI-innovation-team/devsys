@@ -1,19 +1,34 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api, breadcrumb, collectSlugs, DocNode, groupChildren, neighbors, Me } from "./api";
+import { data } from "./data";
+import { isTauri } from "./transport";
+import { AuthGate } from "./components/AuthGate";
 import { Sidebar } from "./components/Sidebar";
 import { Admin } from "./screens/Admin";
 import { Docs } from "./screens/Docs";
 import { Servers } from "./screens/Servers";
 import { Settings } from "./screens/Settings";
+import { Team } from "./screens/Team";
+import { Terminal } from "./screens/Terminal";
 import { Workspaces } from "./screens/Workspaces";
 
-export type View = "workspaces" | "servers" | "docs" | "settings" | "admin";
+export type View = "workspaces" | "servers" | "team" | "docs" | "settings" | "admin";
 export type Theme = "light" | "dark";
 
-const VIEWS: View[] = ["workspaces", "servers", "docs", "settings", "admin"];
+const VIEWS: View[] = ["workspaces", "servers", "team", "docs", "settings", "admin"];
+
+// 自包含 app（tauri）无门户的工作区/文档/管理，默认落在「服务器」页。
+const LOCAL_VIEWS: View[] = ["servers", "team", "settings"];
 
 function restoreView(): View {
+  if (isTauri) {
+    try {
+      const v = localStorage.getItem("devsys.view");
+      if (v && LOCAL_VIEWS.includes(v as View)) return v as View;
+    } catch {}
+    return "servers";
+  }
   try {
     const v = localStorage.getItem("devsys.view");
     if (v && VIEWS.includes(v as View)) return v as View;
@@ -34,12 +49,36 @@ export function App() {
   const [docTree, setDocTree] = useState<DocNode[]>([]);
   const [activeDoc, setActiveDoc] = useState("");
 
-  const reload = useCallback(async () => {
-    try { setMe(await api.me()); } catch { /* Caddy 网关外层已鉴权 */ }
+  // app 内终端（tauri）：非空则全屏打开该服务器的终端。web 仍走新标签页。
+  const [term, setTerm] = useState<{ server: string; ws: string } | null>(null);
+
+  // 保险库在登录门已解锁，会话内无需再次解锁。
+  const goTerminal = (server: string, ws = "") => setTerm({ server, ws });
+
+  // 本地退出登录：锁库 + 回到登录门。
+  const logout = async () => {
+    try { await data.vaultLock(); } catch { /* ignore */ }
+    setTerm(null);
+    setMe(null);
+    setGate({ exists: true });
+  };
+
+  // 本地登录门（tauri）：未解锁前不进 app。web 无门（门户负责鉴权）。
+  const [gate, setGate] = useState<"checking" | { exists: boolean } | null>(isTauri ? "checking" : null);
+  useEffect(() => {
+    if (!isTauri) return;
+    data.vaultState()
+      .then((st) => setGate(st.unlocked ? null : { exists: st.exists }))
+      .catch(() => setGate({ exists: false }));
   }, []);
-  useEffect(() => { reload(); }, [reload]);
+
+  const reload = useCallback(async () => {
+    try { setMe(await data.loadMe()); } catch { /* web: Caddy 外层已鉴权；tauri: 本地空清单 */ }
+  }, []);
+  useEffect(() => { if (!isTauri || gate === null) reload(); }, [reload, gate]);
 
   useEffect(() => {
+    if (isTauri) return; // 自包含 app 无门户文档
     (async () => {
       try {
         const d = await api.docs();
@@ -70,6 +109,11 @@ export function App() {
     try { localStorage.setItem("devsys.doc", slug); } catch {}
   };
 
+  if (gate === "checking") return null;
+  if (gate) return <AuthGate exists={gate.exists} onDone={() => setGate(null)} />;
+
+  if (term) return <Terminal server={term.server} ws={term.ws} onBack={() => setTerm(null)} />;
+
   return (
     <div className="app">
       <Sidebar
@@ -81,11 +125,14 @@ export function App() {
         toggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
         user={me?.user || ""}
         isAdmin={!!me?.is_admin}
+        local={isTauri}
+        onLogout={logout}
         onDocs={() => openDoc("")}
       />
       <main className="main">
         {view === "workspaces" && <Workspaces goSettings={() => setView("settings")} />}
-        {view === "servers" && <Servers me={me} goSettings={() => setView("settings")} />}
+        {view === "servers" && <Servers me={me} reload={reload} goSettings={() => setView("settings")} goTerminal={goTerminal} />}
+        {view === "team" && <Team reload={reload} goServers={() => setView("servers")} />}
         {view === "settings" && <Settings me={me} reload={reload} theme={theme} setTheme={setTheme} />}
         {view === "admin" && me?.is_admin && <Admin me={me} />}
         {view === "docs" && (

@@ -1,0 +1,43 @@
+[package]
+name = "devsys"
+version = "0.1.0"
+description = "DevSys — 自包含内网 SSH 桌面客户端"
+authors = ["colehank"]
+edition = "2021"
+rust-version = "1.77"
+
+# lib + bin：Tauri v2 约定，移动端复用 lib::run()。
+[lib]
+name = "devsys_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9" # team.yaml 解析（团队共享配置）
+# 凭据存加密保险库（Stronghold，主密码 + Argon2）。全平台一致，含移动端。
+iota_stronghold = "2"
+argon2 = "0.5"
+zeroize = "1"
+getrandom = "0.2"
+# 原生 SSH（纯 Rust，异步，PTY + 通道转发用于 ProxyJump）。
+russh = "0.45"
+russh-keys = "0.45"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net"] }
+async-trait = "0.1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
+
+# 依赖即使在 dev 也用优化级编译，否则纯 Rust 加密（argon2 / stronghold 快照）
+# 在 debug 下奇慢 —— 解锁一次要几十秒（表现为“卡死”）。本包代码仍 debug、编译快。
+[profile.dev.package."*"]
+opt-level = 3

@@ -1,0 +1,34 @@
+# 团队共享配置示例（team.yaml）。
+# 团队 = 一份共享配置 + 每人登记自己的设备。加载后，machines 里的机器会作为
+# 「只读节点」出现在你的服务器列表的「团队 · <team>」组里。
+# 共享的是「拓扑」，不是「凭据」—— 你用自己的凭据连（在「设置凭据」里各自配）。
+
+team: neuroai
+
+# 成员及公钥（v1 仅记录；贡献侧会据此把成员公钥同步进各自机器的 authorized_keys）。
+members:
+  - name: alice
+    pubkey: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA_alice_example
+  - name: bob
+    pubkey: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA_bob_example
+
+# 团队共享的机器。tier = 开放档位（0 纯跳板 / 1 受限计算账号[默认] / 2 完全信任）。
+machines:
+  - name: a100-cluster
+    host: a100.neuroai.ts.net
+    port: 22
+    transport: tailnet        # direct | jump | tailnet
+    tier: 1
+
+  - name: lab-store
+    host: 10.0.0.20
+    port: 22
+    transport: direct
+    tier: 1
+
+  - name: gpu-box
+    host: 172.16.10.5
+    port: 22
+    jump: bastion             # 经跳板机 ProxyJump（名字需在你列表里可解析）
+    transport: jump
+    tier: 2

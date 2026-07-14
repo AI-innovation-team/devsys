@@ -10,6 +10,9 @@ frontend/dist/
 dist/
 .vite/
 
+# ── Rust / Tauri 构建产物 ──
+src-tauri/target/
+
 # ── Python ──
 __pycache__/
 **/__pycache__/
@@ -20,6 +23,8 @@ __pycache__/
 
 # ── 运行期数据（用户凭据等，只存在于网关机，绝不入库）──
 **/data/
+# 例外：前端数据源抽象层是源码，不是运行期数据
+!frontend/src/data/
 *.enc
 portal.key
 

@@ -3,8 +3,9 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { api } from "../api";
+import { data } from "../data";
 import { Icon } from "../icons";
+import { transport, isTauri } from "../transport";
 import "../styles/terminal.css";
 
 type KeyDef = { label: string; seq?: string; ctrl?: boolean; paste?: boolean };
@@ -30,7 +31,7 @@ const ctrlByte = (s: string) => {
   return c >= 0x20 && c < 0x7f ? String.fromCharCode(c & 0x1f) : s;
 };
 
-export function Terminal({ server, ws }: { server: string; ws: string }) {
+export function Terminal({ server, ws, onBack }: { server: string; ws: string; onBack?: () => void }) {
   const page = useRef<HTMLDivElement>(null);
   const mount = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
@@ -44,7 +45,7 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
   const who = ws ? server + " · " + ws : server;
 
   useEffect(() => {
-    api.me().then((me) => {
+    data.loadMe().then((me) => {
       const s = me.servers.find((x) => x.name === server);
       if (s) setTitle((ws ? ws + "  —  " : "") + (s.username ? s.username + "@" : "") + server + " · " + s.host + ":" + s.port);
     }).catch(() => {});
@@ -63,21 +64,21 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
     fit.fit();
     term.focus();
 
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const url = `${proto}://${location.host}/ws/ssh/${encodeURIComponent(server)}` + (ws ? `?ws=${encodeURIComponent(ws)}` : "");
-    const sock = new WebSocket(url);
-    const send = (d: string) => { if (sock.readyState === 1) sock.send(JSON.stringify({ t: "i", d })); };
-    sendRef.current = send;
+    // 传输无关：openTerminal 同步返回句柄；onOpen/onData/onClose 由具体传输回调。
     const sendResize = () => {
       try { fit.fit(); } catch { /* ignore */ }
-      if (sock.readyState === 1) sock.send(JSON.stringify({ t: "r", c: term.cols, r: term.rows }));
+      session.resize(term.cols, term.rows);
     };
-    sock.onopen = () => { setConn(true); sendResize(); };
-    sock.onmessage = (e) => term.write(e.data);
-    sock.onclose = () => {
-      setConn(false);
-      term.write("\r\n\x1b[2m[AIT.dev] " + (ws ? "已断开 · 工作区仍在后台运行，回门户可重新接入" : "连接已关闭") + "\x1b[0m\r\n");
-    };
+    const session = transport.openTerminal(server, ws, {
+      onOpen: () => { setConn(true); sendResize(); },
+      onData: (d) => term.write(d),
+      onClose: () => {
+        setConn(false);
+        term.write("\r\n\x1b[2m[AIT.dev] " + (ws ? "已断开 · 工作区仍在后台运行，回门户可重新接入" : "连接已关闭") + "\x1b[0m\r\n");
+      },
+    });
+    const send = (d: string) => session.write(d);
+    sendRef.current = send;
     term.onData((d) => {
       // 粘性 Ctrl 激活时，软键盘打出的下一个字符转控制码。
       let out = d;
@@ -93,7 +94,7 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
     return () => {
       window.removeEventListener("resize", onResize);
       document.removeEventListener("fullscreenchange", onFs);
-      sock.close();
+      session.close();
       term.dispose();
       sendRef.current = null;
     };
@@ -126,6 +127,18 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
   }, []);
 
   const toggleFs = () => {
+    if (isTauri) {
+      // WKWebView 不支持元素级 requestFullscreen；切 OS 窗口全屏，终端随之填满显示器。
+      const w = (window as unknown as { __TAURI__?: any }).__TAURI__?.window?.getCurrentWindow?.();
+      if (!w) return;
+      w.isFullscreen().then((cur: boolean) => {
+        w.setFullscreen(!cur);
+        setFs(!cur);
+        // 全屏切换后 webview 尺寸变化，稍后 refit 终端。
+        setTimeout(() => window.dispatchEvent(new Event("resize")), 200);
+      });
+      return;
+    }
     if (document.fullscreenElement) document.exitFullscreen();
     else box.current?.requestFullscreen?.();
   };
@@ -173,7 +186,9 @@ export function Terminal({ server, ws }: { server: string; ws: string }) {
     <div className="tpage" ref={page}>
       <div className="tbar">
         <div className="l">
-          <a className="back" href="/" title="返回门户"><Icon name="arrowLeft" /></a>
+          {onBack
+            ? <button className="back" onClick={onBack} title="返回"><Icon name="arrowLeft" /></button>
+            : <a className="back" href="/" title="返回门户"><Icon name="arrowLeft" /></a>}
           <span className="tile"><Icon name="terminal" /></span>
           <span className="tbrand">AIT.dev</span>
         </div>

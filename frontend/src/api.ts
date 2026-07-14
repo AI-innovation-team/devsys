@@ -8,6 +8,12 @@ export interface Server {
   username: string;
   auth: "password" | "key";
   has_secret: boolean;
+  // 可达性（自包含 app 用；web 门户可缺省）。direct=LAN/VPN 直连，jump=经 ProxyJump，tailnet=经内嵌 tailscaled。
+  transport?: "direct" | "jump" | "tailnet";
+  // 来源：mine=我加的，team:<名>=团队给的（本地只读）。web 门户可缺省。
+  source?: string;
+  // 我把这台机贡献给了哪些团队（team:<名>）。与 source 正交。
+  shared_to?: string[];
 }
 export interface Me {
   user: string;

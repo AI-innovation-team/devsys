@@ -12,16 +12,21 @@ interface Props {
   toggleTheme: () => void;
   user: string;
   isAdmin: boolean;
+  local: boolean; // 自包含 app 本地模式：无门户身份/工作区/文档
+  onLogout?: () => void; // 本地退出登录（锁库）
   onDocs: () => void; // 「文档」按钮：进入文档首页
 }
 
 const NAV: { id: View; icon: string; label: string }[] = [
   { id: "workspaces", icon: "grid", label: "工作区" },
   { id: "servers", icon: "terminal", label: "服务器" },
+  { id: "team", icon: "users", label: "连接团队" },
   { id: "docs", icon: "file", label: "文档" },
 ];
 
-export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggleTheme, user, isAdmin, onDocs }: Props) {
+export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggleTheme, user, isAdmin, local, onLogout, onDocs }: Props) {
+  // 本地模式保留「服务器」+「连接团队」；工作区/文档是门户（在线模式）功能。
+  const nav = local ? NAV.filter((n) => n.id === "servers" || n.id === "team") : NAV;
   const [menuOpen, setMenuOpen] = useState(false);
   const footRef = useRef<HTMLDivElement>(null);
 
@@ -48,7 +53,7 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
 
       <div className="nav">
         <div className="nav-sec">工作台</div>
-        {NAV.map((n) => (
+        {nav.map((n) => (
           <button
             key={n.id}
             className={"nav-item" + (view === n.id ? " active" : "")}
@@ -69,9 +74,9 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
 
       <div className="rail-foot" ref={footRef}>
         <button className="avatar-btn" onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }} aria-label="用户菜单">
-          <span className="avatar">{(user || "·").slice(0, 1)}</span>
+          <span className="avatar">{(local ? (user || "本") : (user || "·")).slice(0, 1)}</span>
           <div className="avatar-meta">
-            <div className="avatar-name">{user || "…"}</div>
+            <div className="avatar-name">{local ? (user || "本地") : (user || "…")}</div>
           </div>
           <Icon name="updown" className="avatar-chev" />
         </button>
@@ -89,9 +94,15 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
               <Icon name={theme === "dark" ? "sun" : "moon"} />{theme === "dark" ? "浅色模式" : "深色模式"}
             </button>
             <div className="menu-sep" />
-            <a href="/oauth2/sign_out?rd=/oauth2/sign_in" className="danger">
-              <Icon name="logout" />退出登录
-            </a>
+            {local ? (
+              <button className="danger" onClick={() => { onLogout?.(); setMenuOpen(false); }}>
+                <Icon name="logout" />退出登录
+              </button>
+            ) : (
+              <a href="/oauth2/sign_out?rd=/oauth2/sign_in" className="danger">
+                <Icon name="logout" />退出登录
+              </a>
+            )}
           </div>
         )}
       </div>
