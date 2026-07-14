@@ -52,6 +52,15 @@ export function App() {
   // app 内终端（tauri）：非空则全屏打开该服务器的终端。web 仍走新标签页。
   const [term, setTerm] = useState<{ server: string; ws: string } | null>(null);
 
+  // 当前团队配置（team.yaml 路径）。跨屏共享：Team 屏设定，Servers 屏据此贡献机器。
+  const [teamPath, setTeamPathState] = useState<string>(() => {
+    try { return localStorage.getItem("devsys.team") || ""; } catch { return ""; }
+  });
+  const setTeamPath = (p: string) => {
+    setTeamPathState(p);
+    try { p ? localStorage.setItem("devsys.team", p) : localStorage.removeItem("devsys.team"); } catch { /* ignore */ }
+  };
+
   // 保险库在登录门已解锁，会话内无需再次解锁。
   const goTerminal = (server: string, ws = "") => setTerm({ server, ws });
 
@@ -110,7 +119,7 @@ export function App() {
   };
 
   if (gate === "checking") return null;
-  if (gate) return <AuthGate exists={gate.exists} onDone={() => setGate(null)} />;
+  if (gate) return <AuthGate exists={gate.exists} onDone={() => setGate(null)} onReset={() => setGate({ exists: false })} />;
 
   if (term) return <Terminal server={term.server} ws={term.ws} onBack={() => setTerm(null)} />;
 
@@ -131,8 +140,24 @@ export function App() {
       />
       <main className="main">
         {view === "workspaces" && <Workspaces goSettings={() => setView("settings")} />}
-        {view === "servers" && <Servers me={me} reload={reload} goSettings={() => setView("settings")} goTerminal={goTerminal} />}
-        {view === "team" && <Team reload={reload} goServers={() => setView("servers")} />}
+        {view === "servers" && (
+          <Servers
+            me={me}
+            reload={reload}
+            goSettings={() => setView("settings")}
+            goTerminal={goTerminal}
+            teamPath={teamPath}
+            goTeam={() => setView("team")}
+          />
+        )}
+        {view === "team" && (
+          <Team
+            reload={reload}
+            goServers={() => setView("servers")}
+            teamPath={teamPath}
+            setTeamPath={setTeamPath}
+          />
+        )}
         {view === "settings" && <Settings me={me} reload={reload} theme={theme} setTheme={setTheme} />}
         {view === "admin" && me?.is_admin && <Admin me={me} />}
         {view === "docs" && (

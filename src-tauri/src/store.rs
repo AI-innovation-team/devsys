@@ -102,6 +102,16 @@ pub fn set_shared(dir: &PathBuf, name: &str, team: &str, on: bool) -> Result<Vec
     Ok(list)
 }
 
+// 保险库重置后：把所有 has_secret 标记归零（凭据已销毁，标记不能继续骗人）。
+pub fn clear_all_secrets(dir: &PathBuf) -> Result<Vec<Server>, String> {
+    let mut list = load(dir);
+    for s in list.iter_mut() {
+        s.has_secret = false;
+    }
+    save(dir, &list)?;
+    Ok(list)
+}
+
 // 删除；同时清掉任何把它当 jump 的悬空引用（置空该字段、转回 direct）。
 pub fn remove(dir: &PathBuf, name: &str) -> Result<Vec<Server>, String> {
     let mut list = load(dir);

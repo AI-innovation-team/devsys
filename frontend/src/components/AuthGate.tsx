@@ -9,11 +9,13 @@ const NET_E = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [
 // 登录门：一个密码解锁本地保险库（密码 = 凭据钥匙）。没有「本地/远程」之分 ——
 // 只有节点，团队是登录后 app 内的一等入口，不在登录门分叉。
 // exists = 本地保险库已建（决定是「登录」还是「创建密码」）。
-export function AuthGate({ exists, onDone }: { exists: boolean; onDone: () => void }) {
+// onReset = 重置后回到「创建密码」态（密码不可找回，重置是唯一出路）。
+export function AuthGate({ exists, onDone, onReset }: { exists: boolean; onDone: () => void; onReset: () => void }) {
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
 
   const submit = async () => {
     if (!pw) { setErr("请输入密码"); return; }
@@ -28,6 +30,20 @@ export function AuthGate({ exists, onDone }: { exists: boolean; onDone: () => vo
       onDone();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+
+  const doReset = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      await data.vaultReset();
+      setPw(""); setPw2(""); setConfirmReset(false);
+      onReset(); // → exists=false，回到「创建密码」
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
       setBusy(false);
     }
   };
@@ -75,6 +91,22 @@ export function AuthGate({ exists, onDone }: { exists: boolean; onDone: () => vo
           )}
           <button className="gate-cta" disabled={busy} onClick={submit}>{cta}</button>
         </div>
+
+        {/* 密码不可找回（Argon2 派生密钥加密快照，明文不落盘），重置是唯一出路 —— 代价必须说清。 */}
+        {exists && (confirmReset ? (
+          <div className="gate-reset">
+            <p className="gate-reset-warn">
+              重置将<strong>永久销毁</strong>保险库里的所有凭据（密码、私钥），<strong>无法恢复</strong>。
+              你的服务器列表会保留，之后需要重新录入凭据。
+            </p>
+            <div className="gate-reset-row">
+              <button className="gate-reset-go" disabled={busy} onClick={doReset}>{busy ? "重置中…" : "确认重置"}</button>
+              <button className="gate-reset-no" disabled={busy} onClick={() => setConfirmReset(false)}>取消</button>
+            </div>
+          </div>
+        ) : (
+          <button className="gate-link" onClick={() => { setConfirmReset(true); setErr(""); }}>忘记密码？</button>
+        ))}
 
         <p className="gate-foot">{foot}</p>
       </div>

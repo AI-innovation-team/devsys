@@ -143,6 +143,19 @@ impl Vault {
             let _ = self.persist(u);
         }
     }
+
+    // 重置：忘记主密码的唯一出路 —— 销毁快照与 salt，凭据全丢（不可逆）。
+    // 拓扑（servers.json）不在这里，调用方负责把 has_secret 标记一并清掉。
+    pub fn reset(&self) -> Result<(), String> {
+        *self.inner.lock().unwrap() = None;
+        for f in [SNAP_FILE, SALT_FILE] {
+            let p = self.dir.join(f);
+            if p.exists() {
+                std::fs::remove_file(&p).map_err(e2s)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -171,5 +184,27 @@ mod tests {
         // 错误密码应失败
         let v3 = Vault::new(dir);
         assert!(v3.unlock("wrongpass").is_err());
+    }
+
+    #[test]
+    fn reset_destroys_and_allows_new_password() {
+        let dir = std::env::temp_dir().join("devsys-vault-reset-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let v = Vault::new(dir.clone());
+        v.unlock("oldpass123").unwrap();
+        v.set("srv", "secret").unwrap();
+        assert!(v.exists());
+
+        // 重置：快照销毁、回到「未建库」，内存解锁态也清掉
+        v.reset().unwrap();
+        assert!(!v.exists());
+        assert!(!v.is_unlocked());
+
+        // 可用全新密码重建；旧凭据不复存在
+        let v2 = Vault::new(dir);
+        v2.unlock("brandnew456").unwrap();
+        assert!(v2.get("srv").is_err()); // 旧凭据已随快照销毁
     }
 }

@@ -3,6 +3,8 @@ import { useState } from "react";
 import { Theme } from "../App";
 import { api, Me, Server } from "../api";
 import { data } from "../data";
+import { isTauri } from "../transport";
+import { TailnetPanel } from "../components/TailnetPanel";
 import { Icon } from "../icons";
 
 interface Props {
@@ -19,6 +21,13 @@ export function Settings({ me, reload, theme, setTheme }: Props) {
       <header className="page-head"><h1>设置</h1></header>
 
       {me?.email_login && <AccountSection email={me.user} />}
+
+      {isTauri && (
+        <section className="set-sec">
+          <div className="set-h"><h2>网络织物</h2></div>
+          <TailnetPanel />
+        </section>
+      )}
 
       <section className="set-sec">
         <div className="set-h"><h2>连接凭据</h2></div>

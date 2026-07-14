@@ -13,6 +13,9 @@ dist/
 # ── Rust / Tauri 构建产物 ──
 src-tauri/target/
 
+# ── tsnet sidecar 编译产物（28MB，构建时从 tsnet-helper/ 生成）──
+tsnet-helper/tsnet-helper
+
 # ── Python ──
 __pycache__/
 **/__pycache__/
@@ -37,3 +40,6 @@ build/
 
 # 真实拓扑（本地）——用 config.yaml.example 做模板
 config.yaml
+
+# 真实 team.yaml 是测试/使用产物（含真实拓扑），只提交 *.example.yaml
+examples/team.yaml

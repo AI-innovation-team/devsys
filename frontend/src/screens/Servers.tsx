@@ -3,6 +3,8 @@ import { useState } from "react";
 import { Me, Server } from "../api";
 import { data, supportsLocalTopology, type ServerInput, type SshHost } from "../data";
 import { ImportModal } from "../components/ImportModal";
+import { ProvisionModal } from "../components/ProvisionModal";
+import { SelfNodeModal } from "../components/SelfNodeModal";
 import { Icon } from "../icons";
 
 type TKind = "direct" | "jump" | "tailnet";
@@ -10,6 +12,13 @@ const TRANSPORTS: { v: TKind; label: string; hint: string }[] = [
   { v: "direct", label: "直连", hint: "同一 LAN / VPN 内直达" },
   { v: "jump", label: "跳板", hint: "经另一台服务器 ProxyJump" },
   { v: "tailnet", label: "Tailnet", hint: "经 Tailscale 直达" },
+];
+
+// 贡献机器时选的「开放档位」—— 机器主人决定给团队开多大权，也为此担责。
+const TIERS: { v: number; label: string; hint: string }[] = [
+  { v: 0, label: "档 0 · 纯跳板", hint: "只借道转发，队友在这台机上没有 shell" },
+  { v: 1, label: "档 1 · 受限计算", hint: "每人独立账号、无 sudo，能跑计算（推荐）" },
+  { v: 2, label: "档 2 · 完全信任", hint: "有 sudo —— 仅限核心成员" },
 ];
 
 // 按来源分组：mine 永远第一组，其后是各团队（team:<名>）。
@@ -35,17 +44,24 @@ export function Servers({
   reload,
   goSettings,
   goTerminal,
+  teamPath,
+  goTeam,
 }: {
   me: Me | null;
   reload: () => Promise<void> | void;
   goSettings: () => void;
   goTerminal: (name: string) => void;
+  teamPath: string; // 当前团队 team.yaml；空 = 还没连团队
+  goTeam: () => void;
 }) {
   const servers = me?.servers || [];
   const local = supportsLocalTopology;
   const [editing, setEditing] = useState<Server | "new" | null>(null);
   const [imp, setImp] = useState<{ path: string; hosts: SshHost[] } | null>(null);
   const [impErr, setImpErr] = useState("");
+  // 正在下发授权的机器（打开 ProvisionModal）
+  const [prov, setProv] = useState<{ server: string; tier: number } | null>(null);
+  const [addSelf, setAddSelf] = useState(false); // 把本机登记成节点
 
   const loadConfig = async (path?: string) => {
     setImpErr("");
@@ -80,10 +96,14 @@ export function Servers({
                 s={s}
                 local={local}
                 readonly={g.team}
+                teamPath={teamPath}
                 goSettings={goSettings}
                 goTerminal={goTerminal}
+                goTeam={goTeam}
+                reload={reload}
                 onEdit={() => setEditing(s)}
                 onDelete={async () => { await data.delServer(s.name); await reload(); }}
+                onProvision={(tier) => setProv({ server: s.name, tier })}
               />
             ))}
           </div>
@@ -102,9 +122,15 @@ export function Servers({
           <button className="add-row" onClick={() => setEditing("new")}>
             <Icon name="plus" />添加服务器
           </button>
-          <button className="import-btn" onClick={() => loadConfig()}>
-            <Icon name="upload" />导入本机配置
-          </button>
+          <div className="row-btns">
+            <button className="import-btn" onClick={() => loadConfig()}>
+              <Icon name="upload" />导入本机配置
+            </button>
+            {/* 本机也是节点：可作算力贡献，也可作通往你内网的跳板 */}
+            <button className="import-btn" onClick={() => setAddSelf(true)}>
+              <Icon name="server" />添加本机
+            </button>
+          </div>
           {impErr && <div className="import-err">{impErr}</div>}
         </>
       ))}
@@ -126,6 +152,23 @@ export function Servers({
           }}
         />
       )}
+
+      {prov && (
+        <ProvisionModal
+          teamPath={teamPath}
+          server={prov.server}
+          tier={prov.tier}
+          onClose={() => setProv(null)}
+        />
+      )}
+
+      {addSelf && (
+        <SelfNodeModal
+          existing={new Set(servers.map((s) => s.name))}
+          onCancel={() => setAddSelf(false)}
+          onAdded={async () => { await reload(); setAddSelf(false); }}
+        />
+      )}
     </div>
   );
 }
@@ -134,21 +177,58 @@ function LaunchCard({
   s,
   local,
   readonly,
+  teamPath,
   goSettings,
   goTerminal,
+  goTeam,
+  reload,
   onEdit,
   onDelete,
+  onProvision,
 }: {
   s: Server;
   local: boolean;
   readonly: boolean; // 团队来源：拓扑只读（仍可设自己的凭据、SSH）
+  teamPath: string;
   goSettings: () => void;
   goTerminal: (name: string) => void;
+  goTeam: () => void;
+  reload: () => Promise<void> | void;
   onEdit: () => void;
   onDelete: () => void;
+  onProvision: (tier: number) => void;
 }) {
   const ready = !!(s.has_secret && s.username);
   const [confirming, setConfirming] = useState(false);
+  const [sharing, setSharing] = useState(false); // 展开档位选择面板
+  const [tier, setTier] = useState(1);           // 默认档 1（受限计算）
+  const [busy, setBusy] = useState(false);
+  const [shareErr, setShareErr] = useState("");
+
+  const shared = (s.shared_to?.length ?? 0) > 0;
+  const sharedTeam = s.shared_to?.[0]?.replace(/^team:/, "") ?? "";
+
+  const doShare = async () => {
+    setBusy(true); setShareErr("");
+    try {
+      await data.shareServer(teamPath, s.name, tier);
+      await reload();
+      setSharing(false);
+    } catch (e) {
+      setShareErr(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(false); }
+  };
+
+  const doUnshare = async () => {
+    setBusy(true); setShareErr("");
+    try {
+      await data.unshareServer(teamPath, s.name);
+      await reload();
+    } catch (e) {
+      setShareErr(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(false); }
+  };
+
   return (
     <article className="card">
       <div className="card-head">
@@ -158,6 +238,7 @@ function LaunchCard({
             <span className="srv-name">{s.name}</span>
             {s.transport === "tailnet" && <span className="badge">tailnet</span>}
             {s.jump && <span className="badge">via {s.jump}</span>}
+            {shared && <span className="badge accent"><Icon name="users" />共享给 {sharedTeam}</span>}
           </div>
           <div className="srv-host"><Icon name="network" />{s.host}:{s.port}</div>
         </div>
@@ -182,6 +263,14 @@ function LaunchCard({
               </>
             ) : (
               <>
+                {/* 贡献：把这台机的拓扑给团队（凭据不出本机）。未连团队 → 引导去连。 */}
+                <button
+                  className="btn subtle sm"
+                  title={shared ? "共享设置" : "共享给团队"}
+                  onClick={() => (teamPath ? setSharing((v) => !v) : goTeam())}
+                >
+                  <Icon name="users" />
+                </button>
                 <button className="btn subtle sm" title="编辑" onClick={onEdit}><Icon name="pencil" /></button>
                 <button className="btn subtle sm" title="删除" onClick={() => setConfirming(true)}><Icon name="trash" /></button>
               </>
@@ -189,6 +278,53 @@ function LaunchCard({
           )}
         </div>
       </div>
+
+      {/* 共享面板：选档位 → 写进 team.yaml；已共享的可下发授权（装队友公钥）或撤销。 */}
+      {sharing && local && !readonly && (
+        <div className="share-panel">
+          {shareErr && <div className="import-err">{shareErr}</div>}
+          {shared ? (
+            <>
+              <div className="share-t">
+                已共享给 <strong>{sharedTeam}</strong> —— 队友能看到这台机的拓扑了。
+                但要让他们<strong>真能登进去</strong>，还需下发授权（在这台机上为每位成员建独立账号 + 装其公钥）。
+              </div>
+              <div className="share-row">
+                <button className="btn primary sm" disabled={busy} onClick={() => onProvision(tier)}>
+                  <Icon name="key" />下发授权
+                </button>
+                <button className="btn subtle sm" disabled={busy} onClick={doUnshare}>撤销共享</button>
+                <button className="btn subtle sm" onClick={() => setSharing(false)}>收起</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="share-t">
+                共享的是<strong>拓扑</strong>（怎么到达这台机），<strong>不是凭据</strong> —— 你的密码/私钥永不出本机。
+                选一个开放档位：
+              </div>
+              <div className="tier-pick">
+                {TIERS.map((t) => (
+                  <button
+                    key={t.v}
+                    className={"tier-opt" + (tier === t.v ? " on" : "")}
+                    onClick={() => setTier(t.v)}
+                  >
+                    <span className="tier-l">{t.label}</span>
+                    <span className="tier-h">{t.hint}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="share-row">
+                <button className="btn primary sm" disabled={busy} onClick={doShare}>
+                  <Icon name="users" />{busy ? "共享中…" : "共享给团队"}
+                </button>
+                <button className="btn subtle sm" onClick={() => setSharing(false)}>取消</button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </article>
   );
 }

@@ -144,6 +144,40 @@ async fn build_conn(
     }
 }
 
+// 一次性命令的执行结果（授权下发用：装公钥、建账号）。
+pub struct ExecOut {
+    pub code: u32,
+    pub output: String, // stdout + stderr 合并（下发脚本自己回显进度）
+}
+
+// 非交互执行一条命令并收集输出。与 open() 共用连接逻辑（含 ProxyJump）。
+pub async fn exec(
+    target: Server,
+    target_secret: String,
+    jump: Option<(Server, String)>,
+    command: String,
+) -> Result<ExecOut, String> {
+    let conn = build_conn(&target, &target_secret, jump).await?;
+    let mut channel = conn.handle.channel_open_session().await.map_err(e2s)?;
+    channel.exec(true, command).await.map_err(e2s)?;
+
+    let mut buf = Vec::new();
+    let mut code: Option<u32> = None;
+    loop {
+        match channel.wait().await {
+            Some(ChannelMsg::Data { data }) => buf.extend_from_slice(&data),
+            Some(ChannelMsg::ExtendedData { data, .. }) => buf.extend_from_slice(&data),
+            Some(ChannelMsg::ExitStatus { exit_status }) => code = Some(exit_status),
+            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+            _ => {}
+        }
+    }
+    Ok(ExecOut {
+        code: code.unwrap_or(0),
+        output: String::from_utf8_lossy(&buf).to_string(),
+    })
+}
+
 // 建立会话：连接 + PTY + shell，起后台任务桥接，返回 session id。
 pub async fn open(
     app: AppHandle,

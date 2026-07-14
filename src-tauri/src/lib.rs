@@ -2,7 +2,13 @@
 //   阶段 0：脚手架 + SSH 命令桩（打通 transport → 命令 → data/close 事件 → xterm）。
 //   阶段 1：本地拓扑（store）+ 凭据（vault，Stronghold 加密保险库）命令。
 //   阶段 2：ssh_* 桩替换为 russh 原生会话（直连/ProxyJump/tailnet）。
+mod acl;
+mod e2e; // 共享闭环的全链路集成测试（#[cfg(test)]）
+mod gitsync;
+mod provision;
+mod selfnode;
 mod ssh;
+mod tailnet;
 mod sshconfig;
 mod store;
 mod team;
@@ -49,6 +55,17 @@ async fn vault_unlock(state: State<'_, AppState>, password: String) -> Result<()
 fn vault_lock(state: State<AppState>) {
     state.sessions.close_all();
     state.vault.lock();
+}
+
+// 重置保险库：忘记主密码的唯一出路。销毁快照（凭据全丢，不可逆），
+// 同时把 has_secret 标记归零 —— 否则 UI 会以为凭据还在。拓扑保留。
+#[tauri::command]
+fn vault_reset(state: State<AppState>) -> Result<(), String> {
+    state.sessions.close_all();
+    state.vault.reset()?;
+    let _g = state.lock.lock().unwrap();
+    store::clear_all_secrets(&state.dir)?;
+    Ok(())
 }
 
 // 本地用户名（非机密，纯文件；登录密码即保险库主密码，不单独存）。
@@ -264,6 +281,33 @@ fn create_team(path: String, team_name: String, member: String, pubkey: String) 
     write_team(&path, &cfg)
 }
 
+// 探测本机作为节点：地址（内建 tailnet 优先）、sshd 是否在跑、能当算力还是跳板。
+// 心智：没有「本地/远程」之分，只有节点 —— 你自己这台机也能贡献给团队。
+#[tauri::command]
+fn detect_self(tn: State<Arc<tailnet::Tailnet>>) -> selfnode::SelfNode {
+    let ip = tn.status().ip;
+    selfnode::detect(if ip.is_empty() { None } else { Some(ip) })
+}
+
+// 读本机 ~/.ssh/*.pub —— 加入团队时登记自己的公钥（公钥非机密，可以出本机；私钥永不）。
+#[tauri::command]
+fn my_pubkeys(app: AppHandle) -> Result<Vec<String>, String> {
+    let dir = app.path().home_dir().map_err(|e| e.to_string())?.join(".ssh");
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return Ok(vec![]);
+    };
+    let mut keys: Vec<String> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "pub"))
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
+}
+
 // 邀成员：把 {name, pubkey} 写进 team.yaml（贡献侧据此把公钥同步进各机 authorized_keys）。
 #[tauri::command]
 fn add_member(path: String, name: String, pubkey: String) -> Result<team::TeamConfig, String> {
@@ -273,7 +317,24 @@ fn add_member(path: String, name: String, pubkey: String) -> Result<team::TeamCo
     Ok(cfg)
 }
 
+// 一台本地机 → team.yaml 的条目。
+fn to_machine(s: &store::Server, tier: u8) -> team::TeamMachine {
+    team::TeamMachine {
+        name: s.name.clone(),
+        host: s.host.clone(),
+        port: s.port,
+        jump: s.jump.clone(),
+        username: s.username.clone(),
+        transport: s.transport.clone(),
+        tier,
+    }
+}
+
 // 贡献一台机：把本地机的拓扑写进 team.yaml + 给本地机打 shared_to 标记（凭据不出本机）。
+//
+// 跳板链必须完整：共享一台走跳板的机器时，**跳板本身也得在 team.yaml 里**，
+// 否则队友拿到的是一个指向不存在跳板的条目 —— 根本连不上。
+// 跳板按档 0（纯跳板：只借道、不给 shell）自动一并共享，除非它已被单独共享（那就不动它的档）。
 #[tauri::command]
 fn share_server(
     state: State<AppState>,
@@ -287,24 +348,49 @@ fn share_server(
     if srv.source != "mine" {
         return Err("只能贡献自己的机器（团队给的机器不可再贡献）".into());
     }
+
     let mut cfg = read_team(&team_path)?;
-    team::upsert_machine(
-        &mut cfg,
-        team::TeamMachine {
-            name: srv.name.clone(),
-            host: srv.host.clone(),
-            port: srv.port,
-            jump: srv.jump.clone(),
-            username: srv.username.clone(),
-            transport: srv.transport.clone(),
-            tier,
-        },
-    );
+    let team_src = format!("team:{}", cfg.team);
+
+    // 先补跳板（可能是链：A 经 B 经 C，逐级向上）。
+    let mut chain: Vec<store::Server> = Vec::new();
+    let mut hop = srv.jump.clone();
+    let mut guard = 0;
+    while let Some(jn) = hop {
+        guard += 1;
+        if guard > 8 {
+            return Err("跳板链过长（可能成环）".into());
+        }
+        let j = list
+            .iter()
+            .find(|s| s.name == jn)
+            .ok_or_else(|| format!("跳板 {jn} 不在你的服务器列表里 —— 队友将无法经它到达"))?;
+        if j.source != "mine" {
+            return Err(format!("跳板 {jn} 不是你的机器，无法一并共享"));
+        }
+        hop = j.jump.clone();
+        chain.push(j.clone());
+    }
+    for j in &chain {
+        // 已在 team.yaml 里就别改它的档位（可能被主人单独设过）。
+        if !cfg.machines.iter().any(|m| m.name == j.name) {
+            team::upsert_machine(&mut cfg, to_machine(j, 0)); // 档 0：只借道
+        }
+    }
+
+    team::upsert_machine(&mut cfg, to_machine(srv, tier));
     write_team(&team_path, &cfg)?;
-    store::set_shared(&state.dir, &server, &format!("team:{}", cfg.team), true)
+
+    // 本地标记：目标机 + 跳板链上的每一台都算"已共享给这个团队"。
+    let mut out = store::set_shared(&state.dir, &server, &team_src, true)?;
+    for j in &chain {
+        out = store::set_shared(&state.dir, &j.name, &team_src, true)?;
+    }
+    Ok(out)
 }
 
 // 撤销贡献：从 team.yaml 删该机 + 去掉本地 shared_to 标记。
+// 不允许撤掉仍被其他共享机当跳板的机器 —— 那会把队友的跳板链弄断（他们连不上了）。
 #[tauri::command]
 fn unshare_server(
     state: State<AppState>,
@@ -313,9 +399,185 @@ fn unshare_server(
 ) -> Result<Vec<store::Server>, String> {
     let _g = state.lock.lock().unwrap();
     let mut cfg = read_team(&team_path)?;
+
+    let dependents: Vec<&str> = cfg
+        .machines
+        .iter()
+        .filter(|m| m.name != server && m.jump.as_deref() == Some(server.as_str()))
+        .map(|m| m.name.as_str())
+        .collect();
+    if !dependents.is_empty() {
+        return Err(format!(
+            "{server} 仍是这些共享机的跳板：{} —— 先撤销它们，否则队友会连不上",
+            dependents.join("、")
+        ));
+    }
+
     team::remove_machine(&mut cfg, &server);
     write_team(&team_path, &cfg)?;
     store::set_shared(&state.dir, &server, &format!("team:{}", cfg.team), false)
+}
+
+// 把 team.yaml 的 tier 档位编译成 Tailscale ACL 计划（policy 片段 + 每台机的落地命令）。
+// 只产出计划供人 review —— 我们不替用户改他的 tailnet（责任为门：主人自己拍板、自己贴）。
+#[tauri::command]
+fn compile_acl(path: String) -> Result<acl::AclPlan, String> {
+    Ok(acl::compile(&read_team(&path)?))
+}
+
+// ── team.yaml 的 git 同步（配置即代码：团队配置放 git，天然有历史与 review）──
+// 网络操作放 async（spawn_blocking），避免冻结 UI。
+
+#[tauri::command]
+fn team_git_status(path: String) -> Result<gitsync::GitStatus, String> {
+    gitsync::status(&path)
+}
+
+#[tauri::command]
+async fn team_git_pull(path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || gitsync::pull(&path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn team_git_push(path: String, message: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || gitsync::push(&path, &message))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+// 克隆团队仓库，返回其中 team.yaml 的路径（加入团队最顺的入口）。
+#[tauri::command]
+async fn team_git_clone(url: String, dest: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || gitsync::clone(&url, &dest))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+// ── 授权下发（让队友真能登进去）──────────────────────────
+// 两步走：先 preview（纯生成，看得见要干什么），确认后 apply（经 SSH 以 root 执行）。
+// 我们**不静默改别人的机器** —— 责任为门：机器主人先看脚本，再点执行。
+
+// 生成下发脚本（不连接、不执行）。tier 缺省用 team.yaml 里该机的档位。
+#[tauri::command]
+fn provision_preview(
+    team_path: String,
+    server: String,
+    tier: Option<u8>,
+) -> Result<provision::ProvisionPlan, String> {
+    let cfg = read_team(&team_path)?;
+    let t = match tier {
+        Some(t) => t,
+        None => cfg
+            .machines
+            .iter()
+            .find(|m| m.name == server)
+            .map(|m| m.tier)
+            .ok_or_else(|| format!("team.yaml 里没有机器 {server}"))?,
+    };
+    provision::plan(&cfg, &server, t)
+}
+
+#[derive(Serialize)]
+struct ProvisionResult {
+    ok: bool,
+    code: u32,
+    output: String,
+}
+
+// 真执行：经 SSH（含 ProxyJump）在被共享机上以 root 跑下发脚本。
+// 要求这台机的凭据本身有 root/sudo 权（你是机器主人，本该有）。
+#[tauri::command]
+async fn provision_apply(
+    state: State<'_, AppState>,
+    team_path: String,
+    server: String,
+    tier: Option<u8>,
+) -> Result<ProvisionResult, String> {
+    let plan = provision_preview(team_path, server.clone(), tier)?;
+    if plan.tier == 0 {
+        return Ok(ProvisionResult { ok: true, code: 0, output: "档 0（纯跳板）无需下发。".into() });
+    }
+    if plan.accounts.is_empty() {
+        return Err("没有可下发的成员公钥（team.yaml 里成员缺 pubkey）".into());
+    }
+
+    let (target, secret, jump) = resolve_conn(&state, &server)?;
+    // 脚本经 stdin 喂给 sh，避免超长命令行；sudo -n 需免密，否则请用 root 凭据。
+    let cmd = format!(
+        "sudo -n sh -s <<'DEVSYS_EOF'\n{}\nDEVSYS_EOF\n",
+        plan.script
+    );
+    let out = ssh::exec(target, secret, jump, cmd).await?;
+    Ok(ProvisionResult {
+        ok: out.code == 0,
+        code: out.code,
+        output: out.output,
+    })
+}
+
+// ── 内建 tailnet（tsnet sidecar）─────────────────────────
+// 出站 SOCKS5 供 russh 走 tailnet；入站把 :22 代理到本机 sshd（贡献侧）。
+// 零系统依赖：helper 是随 app 分发的 tsnet 二进制。
+
+// 解析 helper 二进制路径：开发期用仓库里编好的，发布期在资源目录。
+fn helper_path(app: &AppHandle) -> Result<String, String> {
+    let name = "tsnet-helper";
+    // 发布：资源目录
+    if let Ok(res) = app.path().resource_dir() {
+        let p = res.join(name);
+        if p.exists() {
+            return Ok(p.to_string_lossy().to_string());
+        }
+    }
+    // 开发：仓库根 target 约定位置
+    for cand in [
+        "../tsnet-helper/tsnet-helper",
+        "tsnet-helper/tsnet-helper",
+    ] {
+        let p = std::path::Path::new(cand);
+        if p.exists() {
+            return Ok(p.to_string_lossy().to_string());
+        }
+    }
+    Err("找不到 tsnet-helper 二进制（先构建 sidecar）".into())
+}
+
+#[tauri::command]
+fn tailnet_status(tn: State<Arc<tailnet::Tailnet>>) -> tailnet::TailnetStatus {
+    tn.status()
+}
+
+#[tauri::command]
+fn tailnet_up(
+    app: AppHandle,
+    tn: State<Arc<tailnet::Tailnet>>,
+    state: State<AppState>,
+    authkey: Option<String>,
+    ingress: bool,
+) -> Result<(), String> {
+    let helper = helper_path(&app)?;
+    let dir = state.dir.join("tsnet");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let host = std::fs::read_to_string(state.dir.join("profile"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "devsys".into());
+    tn.start(
+        app.clone(),
+        &helper,
+        &dir.to_string_lossy(),
+        &host,
+        authkey.as_deref().unwrap_or(""),
+        ingress,
+    )
+}
+
+#[tauri::command]
+fn tailnet_down(tn: State<Arc<tailnet::Tailnet>>) {
+    tn.stop();
 }
 
 // ── 凭据命令 ─────────────────────────────────────────────
@@ -366,15 +628,9 @@ fn del_credential(state: State<AppState>, server: String) -> Result<(), String> 
 
 // ── SSH 会话（russh 原生：直连 / ProxyJump）───────────────
 
-#[tauri::command]
-async fn ssh_open(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    server: String,
-    ws: Option<String>,
-) -> Result<String, String> {
-    let _ = ws; // 阶段 4：tmux 持久会话
-    // 同步读取拓扑 + 可选跳板（不跨 await 持锁）
+// 解析一台机的连接材料：拓扑 + 凭据（含可选跳板）。锁不跨 await。
+type ConnParts = (store::Server, String, Option<(store::Server, String)>);
+fn resolve_conn(state: &State<'_, AppState>, server: &str) -> Result<ConnParts, String> {
     let (target, jump_srv) = {
         let _g = state.lock.lock().unwrap();
         let list = store::load(&state.dir);
@@ -399,7 +655,7 @@ async fn ssh_open(
         (target, jump_srv)
     };
 
-    let target_secret = state.vault.get(&server)?;
+    let target_secret = state.vault.get(server)?;
     let jump = match jump_srv {
         Some(j) => {
             let js = state.vault.get(&j.name)?;
@@ -407,7 +663,18 @@ async fn ssh_open(
         }
         None => None,
     };
+    Ok((target, target_secret, jump))
+}
 
+#[tauri::command]
+async fn ssh_open(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    server: String,
+    ws: Option<String>,
+) -> Result<String, String> {
+    let _ = ws; // 阶段 4：tmux 持久会话
+    let (target, target_secret, jump) = resolve_conn(&state, &server)?;
     ssh::open(app, state.sessions.clone(), target, target_secret, jump).await
 }
 
@@ -441,12 +708,14 @@ pub fn run() {
                 sessions: Arc::new(ssh::Sessions::new()),
                 vault: vault::Vault::new(dir),
             });
+            app.manage(Arc::new(tailnet::Tailnet::new()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             vault_state,
             vault_unlock,
             vault_lock,
+            vault_reset,
             get_username,
             set_username,
             list_servers,
@@ -458,8 +727,20 @@ pub fn run() {
             read_team_file,
             create_team,
             add_member,
+            my_pubkeys,
+            detect_self,
             share_server,
             unshare_server,
+            compile_acl,
+            team_git_status,
+            team_git_pull,
+            team_git_push,
+            team_git_clone,
+            provision_preview,
+            provision_apply,
+            tailnet_status,
+            tailnet_up,
+            tailnet_down,
             save_credential,
             del_credential,
             ssh_open,
