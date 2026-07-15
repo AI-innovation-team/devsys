@@ -35,6 +35,9 @@ type status struct {
 	AuthURL string `json:"auth_url,omitempty"`// 需要登录时的 URL(没填 authkey 时)
 	SOCKS   string `json:"socks,omitempty"`   // 出站 SOCKS5 监听地址
 	Ingress bool   `json:"ingress,omitempty"` // 入站(:22 代理到本机 sshd)是否已开
+	// ── 验证过的身份（来自团队 IdP 的 SSO 登录，不可伪造）──
+	Login   string `json:"login,omitempty"`   // 登录名(邮箱/类邮箱)，团队身份主键
+	Display string `json:"display,omitempty"` // IdP 给的显示名
 	Err     string `json:"error,omitempty"`
 }
 
@@ -129,12 +132,17 @@ func pollStatus(ctx context.Context, srv *tsnet.Server, socks string, ingress bo
 							break
 						}
 					}
+					// 验证过的身份：Self.UserID → User 表里的 IdP 档案。
+					if prof, ok := st.User[st.Self.UserID]; ok {
+						s.Login = prof.LoginName
+						s.Display = prof.DisplayName
+					}
 				}
 				if st.AuthURL != "" {
 					s.AuthURL = st.AuthURL
 				}
-				// 指纹含 backend + IP + authURL —— 任一变化都上报(修掉之前 IP 为空时漏报 authURL)。
-				fp := st.BackendState + "|" + s.IP + "|" + s.AuthURL
+				// 指纹含 backend + IP + authURL + login —— 任一变化都上报。
+				fp := st.BackendState + "|" + s.IP + "|" + s.AuthURL + "|" + s.Login
 				if fp != last {
 					emit(s)
 					last = fp

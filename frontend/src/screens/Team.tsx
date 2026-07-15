@@ -11,11 +11,13 @@ import { Icon } from "../icons";
 export function Team({
   reload,
   goServers,
+  goSettings,
   teamPath,
   setTeamPath,
 }: {
   reload: () => Promise<void> | void;
   goServers: () => void;
+  goSettings: () => void;
   teamPath: string;
   setTeamPath: (p: string) => void;
 }) {
@@ -36,6 +38,17 @@ export function Team({
   const [newMember, setNewMember] = useState("");
   const [newKey, setNewKey] = useState("");
   const [newRole, setNewRole] = useState("member");
+  const [newIdentity, setNewIdentity] = useState("");
+
+  // GitHub org 绑定（花名册自动导出）
+  const [ghOrg, setGhOrg] = useState("");
+  const [ghToken, setGhToken] = useState("");
+  const [ghBinding, setGhBinding] = useState(false); // 展开绑定表单
+  const [ghSync, setGhSync] = useState<{ count: number; with_keys: number } | null>(null);
+
+  // 验证过的团队身份（tailnet SSO）。login 为空 = 未连 tailnet。
+  const [ident, setIdent] = useState<{ login: string; display: string; name: string }>({ login: "", display: "", name: "" });
+  const verified = !!ident.login;
 
   // git 同步（配置即代码：团队配置放 git 仓库，每人维护自己那段）
   const [git, setGit] = useState<GitStatus | null>(null);
@@ -44,7 +57,13 @@ export function Team({
   const [cloneUrl, setCloneUrl] = useState("");
   const [tick, setTick] = useState(0); // 触发刷新
 
-  useEffect(() => { data.myPubkeys().then((k) => { setPubkeys(k); setPubkey(k[0] || ""); }).catch(() => {}); }, []);
+  useEffect(() => {
+    data.myPubkeys().then((k) => { setPubkeys(k); setPubkey(k[0] || ""); }).catch(() => {});
+    data.tailnetIdentity().then((id) => {
+      setIdent(id);
+      if (id.name) setMyName(id.name); // 验证身份 → 用它派生的账号名（不再自填）
+    }).catch(() => {});
+  }, []);
   useEffect(() => {
     if (!teamPath) { setCfg(null); setGit(null); return; }
     data.readTeamView(teamPath).then(setCfg).catch(() => setCfg(null));
@@ -136,8 +155,36 @@ export function Team({
     if (!newMember.trim() || !newKey.trim()) { setErr("成员名与公钥都要填"); return; }
     setBusy(true); setErr("");
     try {
-      setCfg(await data.addMember(teamPath, newMember.trim(), newKey.trim(), newRole));
-      setNewMember(""); setNewKey(""); setAddingMember(false);
+      setCfg(await data.addMember(teamPath, newMember.trim(), newKey.trim(), newRole, newIdentity.trim()));
+      setNewMember(""); setNewKey(""); setNewIdentity(""); setAddingMember(false);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(false); }
+  };
+
+  // 绑定 org（默认角色映射：core-team→core，其余→member）+ 立即同步一次。
+  const bindAndSync = async () => {
+    if (!ghOrg.trim()) { setErr("填 GitHub org 名"); return; }
+    setBusy(true); setErr("");
+    try {
+      await data.bindGithub(teamPath, ghOrg.trim(), { "core-team": "core", "*": "member" });
+      const r = await data.syncGithub(teamPath, ghToken.trim() || undefined);
+      setGhSync({ count: r.count, with_keys: r.with_keys });
+      setCfg(await data.readTeamView(teamPath));
+      await reload();
+      setGhBinding(false);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(false); }
+  };
+
+  const resync = async () => {
+    setBusy(true); setErr("");
+    try {
+      const r = await data.syncGithub(teamPath, ghToken.trim() || undefined);
+      setGhSync({ count: r.count, with_keys: r.with_keys });
+      setCfg(await data.readTeamView(teamPath));
+      await reload();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally { setBusy(false); }
@@ -167,6 +214,16 @@ export function Team({
         <h1>团队</h1>
         <p>团队是一份共享配置 + 每人登记自己的设备。共享的是<strong>拓扑</strong>，不是凭据 —— 你的密码和私钥永不出本机。</p>
       </header>
+
+      {/* 身份条：团队操作绑定验证过的 SSO 身份（防冒名）。未连 tailnet 则未验证。 */}
+      <div className={"ident-bar" + (verified ? " ok" : "")}>
+        <Icon name={verified ? "check" : "alert"} />
+        {verified ? (
+          <span>已验证身份 <strong>{ident.display || ident.login}</strong>（{ident.login}）· 账号名 <code>{ident.name}</code></span>
+        ) : (
+          <span>未验证身份 —— 团队操作应绑定真实身份。<a onClick={goSettings} style={{ cursor: "pointer" }}>连接 tailnet 登录</a>后即以 SSO 身份认领，防止冒名。</span>
+        )}
+      </div>
 
       {err && <div className="import-err" style={{ marginBottom: 12 }}>{err}</div>}
 
@@ -291,9 +348,11 @@ export function Team({
                   <span className="avatar" style={{ width: 26, height: 26, fontSize: 11 }}>{m.name.slice(0, 1).toUpperCase()}</span>
                   <span className="mem-name">{m.name}</span>
                   <span className={"role-tag " + m.role}>{m.role}</span>
-                  <span className={"mem-key" + (m.pubkey ? "" : " none")}>
-                    {m.pubkey ? m.pubkey.split(" ").slice(0, 2).join(" ").slice(0, 40) + "…" : "无公钥 · 登不进来"}
-                  </span>
+                  {m.identity ? (
+                    <span className="mem-id verified" title={m.identity}><Icon name="check" />{m.identity}</span>
+                  ) : (
+                    <span className="mem-id" title="未绑定 SSO 身份">未验证</span>
+                  )}
                 </div>
               ))}
             </div>
@@ -308,10 +367,16 @@ export function Team({
                     </div>
                   </div>
                   <div className="field">
-                    <label>他的公钥</label>
-                    <div className="inp"><Icon name="key" />
-                      <input value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="ssh-ed25519 AAAA…" autoComplete="off" />
+                    <label>他的 SSO 身份（邮箱 —— 声明「谁是这个成员」，防冒名的锚）</label>
+                    <div className="inp"><Icon name="user" />
+                      <input value={newIdentity} onChange={(e) => setNewIdentity(e.target.value)} placeholder="alice@example.com" autoComplete="off" />
                     </div>
+                  </div>
+                </div>
+                <div className="field">
+                  <label>他的公钥</label>
+                  <div className="inp"><Icon name="key" />
+                    <input value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="ssh-ed25519 AAAA…" autoComplete="off" />
                   </div>
                 </div>
                 <div className="field">
@@ -331,6 +396,53 @@ export function Team({
               <button className="add-row" onClick={() => { setAddingMember(true); setErr(""); }}>
                 <Icon name="plus" />邀请成员
               </button>
+            )}
+          </div>
+        </article>
+      )}
+
+      {/* GitHub org 花名册：绑定后成员/公钥/角色自动导出，新人进 org 自动加入 */}
+      {cfg && !creating && (
+        <article className="card open" style={{ marginTop: 16 }}>
+          <div className="cfg-head">
+            <div className="srv-title">
+              <span className="srv-name" style={{ fontSize: 17 }}>GitHub 花名册</span>
+              <span className="badge">自动</span>
+            </div>
+          </div>
+          <div className="cfg-body">
+            <p className="acl-intro">
+              绑定 GitHub org 后，<strong>成员、公钥、角色全自动导出</strong> —— 不用每人手动登记。
+              新人进 org、下次同步就自动出现（公钥拉自 <code>github.com/&lt;user&gt;.keys</code>）。
+              角色映射：<code>core-team</code> → core，其余 → member。
+            </p>
+            {ghBinding ? (
+              <>
+                <div className="row2">
+                  <div className="field">
+                    <label>GitHub org 名</label>
+                    <div className="inp"><Icon name="network" />
+                      <input value={ghOrg} onChange={(e) => setGhOrg(e.target.value)} placeholder="如 neuroai-lab" autoComplete="off" />
+                    </div>
+                  </div>
+                  <div className="field">
+                    <label>Token（私有 org 才需要，公开 org 留空）</label>
+                    <div className="inp"><Icon name="key" />
+                      <input value={ghToken} type="password" onChange={(e) => setGhToken(e.target.value)} placeholder="ghp_…（可选）" autoComplete="off" />
+                    </div>
+                  </div>
+                </div>
+                <div className="cred-foot">
+                  <button className="btn primary sm" disabled={busy} onClick={bindAndSync}><Icon name="refresh" />{busy ? "同步中…" : "绑定并同步"}</button>
+                  <button className="btn subtle sm" onClick={() => setGhBinding(false)}>取消</button>
+                </div>
+              </>
+            ) : (
+              <div className="share-row">
+                <button className="btn subtle sm" onClick={() => { setGhBinding(true); setErr(""); }}><Icon name="network" />绑定 org</button>
+                <button className="btn subtle sm" disabled={busy} onClick={resync}><Icon name="refresh" />重新同步</button>
+                {ghSync && <span className="save-note">已同步 {ghSync.count} 名成员（{ghSync.with_keys} 有公钥）</span>}
+              </div>
             )}
           </div>
         </article>

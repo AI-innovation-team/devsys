@@ -43,3 +43,7 @@ config.yaml
 
 # 真实 team.yaml 是测试/使用产物（含真实拓扑），只提交 *.example.yaml
 examples/team.yaml
+
+# GitHub 花名册缓存（本地，不入 git；由 sync 刷新）
+.github-roster.json
+**/.github-roster.json

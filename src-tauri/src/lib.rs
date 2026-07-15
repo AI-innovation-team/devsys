@@ -4,6 +4,7 @@
 //   阶段 2：ssh_* 桩替换为 russh 原生会话（直连/ProxyJump/tailnet）。
 mod acl;
 mod e2e; // 共享闭环的全链路集成测试（#[cfg(test)]）
+mod github;
 mod gitsync;
 mod provision;
 mod selfnode;
@@ -265,7 +266,25 @@ fn load_view(team_yaml: &str) -> Result<team::TeamView, String> {
     }
 
     let root = read_root(team_yaml)?;
-    Ok(team::merge(&root, &load_member_files(team_yaml)))
+    let mut view = team::merge(&root, &load_member_files(team_yaml));
+    // 绑定了 GitHub org → 折叠进缓存的花名册（成员/公钥/角色自动，无需手动登记）。
+    // 缓存是本地的（不入 git），由 sync_github 刷新；这里只读，不发网络。
+    if root.github.is_some() {
+        if let Ok(text) = std::fs::read_to_string(gh_cache_path(team_yaml)) {
+            if let Ok(roster) = serde_json::from_str::<Vec<github::GhMember>>(&text) {
+                team::fold_github(&mut view, &roster);
+            }
+        }
+    }
+    Ok(view)
+}
+
+// GitHub 花名册缓存路径（团队目录下的隐藏文件，不入 git）。
+fn gh_cache_path(team_yaml: &str) -> PathBuf {
+    PathBuf::from(team_yaml)
+        .parent()
+        .map(|p| p.join(".github-roster.json"))
+        .unwrap_or_else(|| PathBuf::from(".github-roster.json"))
 }
 
 #[derive(Serialize)]
@@ -332,6 +351,7 @@ fn read_team_view(path: String) -> Result<team::TeamView, String> {
 // 新建团队：生成 team.yaml（角色定义）+ members/<我>.yaml（创建者自己）。
 #[tauri::command]
 fn create_team(
+    tn: State<Arc<tailnet::Tailnet>>,
     path: String,
     team_name: String,
     member: String,
@@ -346,8 +366,11 @@ fn create_team(
     }
     let root = team::new_root(&team_name);
     write_root(&path, &root)?;
-    // 创建者默认 core（团队发起人）。
-    let mf = team::new_member_file(&member, &pubkey, role.as_deref().unwrap_or("core"));
+    // 创建者默认 core（团队发起人）。若已连 tailnet，盖上验证过的身份（防冒名）。
+    let mut mf = team::new_member_file(&member, &pubkey, role.as_deref().unwrap_or("core"));
+    if let Some((login, _)) = tn.status().identity() {
+        mf.member.identity = login;
+    }
     write_member_file(&path, &mf)
 }
 
@@ -385,6 +408,7 @@ fn add_member(
     name: String,
     pubkey: String,
     role: Option<String>,
+    identity: Option<String>, // 被邀成员的 SSO 身份（邮箱）—— 声明"谁是这个成员"
 ) -> Result<team::TeamView, String> {
     // 已有该成员文件则保留其机器，只更新身份字段。
     let mut mf = read_member_file(&member_path(&path, &name))
@@ -394,8 +418,34 @@ fn add_member(
     if let Some(r) = role {
         mf.member.role = r;
     }
+    if let Some(id) = identity {
+        if !id.trim().is_empty() {
+            mf.member.identity = id.trim().into();
+        }
+    }
     write_member_file(&path, &mf)?;
     load_view(&path)
+}
+
+// 防冒名：我要写的 member 文件，其 identity 必须为空（未认领）或等于我的验证身份。
+// 别人已用 SSO 身份认领的文件，我改不了 —— 除非我就是那个身份。
+// 真正的门禁在 tailnet（SSO 决定能否真访问）；这一层挡的是本地误操作 / 自觉冒名。
+fn guard_member_owner(mf: &team::MemberFile, my_identity: &Option<String>) -> Result<(), String> {
+    let claimed = &mf.member.identity;
+    if claimed.is_empty() {
+        return Ok(()); // 未认领
+    }
+    match my_identity {
+        Some(me) if me == claimed => Ok(()),
+        Some(me) => Err(format!(
+            "成员档 {} 已由 {} 认领，你（{}）不能修改",
+            mf.member.name, claimed, me
+        )),
+        None => Err(format!(
+            "成员档 {} 已由 {} 认领 —— 请先连 tailnet 以验证身份",
+            mf.member.name, claimed
+        )),
+    }
 }
 
 // 一台本地机 → member 文件里的机器条目（带 grants）。
@@ -415,6 +465,7 @@ fn to_machine(s: &store::Server, grants: std::collections::BTreeMap<String, u8>)
 // grants = 角色→档位（RBAC）。跳板链自动补全（跳板对所有角色开档 0：只借道不给 shell）。
 #[tauri::command]
 fn share_server(
+    tn: State<Arc<tailnet::Tailnet>>,
     state: State<AppState>,
     team_path: String,
     member: String,
@@ -433,6 +484,14 @@ fn share_server(
     // 我的 member 文件（贡献写进这里 —— 各人各文件，git 无冲突）。
     let mut mf = read_member_file(&member_path(&team_path, &member))
         .map_err(|_| format!("找不到你的成员档 members/{member}.yaml —— 先加入团队"))?;
+    // 防冒名：只能写自己认领的成员档。已连 tailnet 则顺带盖上验证身份。
+    let my_id = tn.status().identity().map(|(l, _)| l);
+    guard_member_owner(&mf, &my_id)?;
+    if let Some(id) = &my_id {
+        if mf.member.identity.is_empty() {
+            mf.member.identity = id.clone();
+        }
+    }
 
     // 跳板链补全（逐级向上）。
     let mut chain: Vec<store::Server> = Vec::new();
@@ -476,6 +535,7 @@ fn share_server(
 // 不允许撤掉仍被（任何成员的）共享机当跳板的机器 —— 会把队友的跳板链弄断。
 #[tauri::command]
 fn unshare_server(
+    tn: State<Arc<tailnet::Tailnet>>,
     state: State<AppState>,
     team_path: String,
     member: String,
@@ -499,6 +559,7 @@ fn unshare_server(
 
     let mut mf = read_member_file(&member_path(&team_path, &member))
         .map_err(|_| format!("找不到你的成员档 members/{member}.yaml"))?;
+    guard_member_owner(&mf, &tn.status().identity().map(|(l, _)| l))?;
     team::remove_machine(&mut mf, &server);
     write_member_file(&team_path, &mf)?;
     store::set_shared(&state.dir, &server, &format!("team:{}", view.team), false)
@@ -508,6 +569,47 @@ fn unshare_server(
 #[tauri::command]
 fn compile_acl(path: String) -> Result<acl::AclPlan, String> {
     Ok(acl::compile(&load_view(&path)?))
+}
+
+// ── GitHub org 花名册（成员/公钥/角色自动导出，消掉手动登记）──
+
+// 绑定 GitHub org + 角色映射，写进 team.yaml（团队级声明）。
+#[tauri::command]
+fn bind_github(
+    path: String,
+    org: String,
+    role_map: std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    if org.trim().is_empty() {
+        return Err("org 不能为空".into());
+    }
+    let mut root = read_root(&path)?;
+    root.github = Some(github::GithubBinding { org: org.trim().into(), role_map });
+    write_root(&path, &root)
+}
+
+#[derive(Serialize)]
+struct SyncGithubResult {
+    count: usize,
+    with_keys: usize,
+    members: Vec<github::GhMember>,
+}
+
+// 同步 GitHub 花名册：拉 org 成员 + 公钥 + 角色，缓存到本地（不入 git）。async。
+#[tauri::command]
+async fn sync_github(path: String, token: Option<String>) -> Result<SyncGithubResult, String> {
+    let root = read_root(&path)?;
+    let binding = root.github.ok_or("这个团队还没绑定 GitHub org")?;
+    let cache = gh_cache_path(&path);
+    let members = tokio::task::spawn_blocking(move || github::sync(&binding, token.as_deref()))
+        .await
+        .map_err(|e| e.to_string())??;
+
+    let with_keys = members.iter().filter(|m| !m.pubkeys.is_empty()).count();
+    let json = serde_json::to_string_pretty(&members).map_err(|e| e.to_string())?;
+    std::fs::write(&cache, json).map_err(|e| e.to_string())?;
+
+    Ok(SyncGithubResult { count: members.len(), with_keys, members })
 }
 
 // ── team.yaml 的 git 同步（配置即代码：团队配置放 git，天然有历史与 review）──
@@ -649,6 +751,26 @@ fn tailnet_up(
 #[tauri::command]
 fn tailnet_down(tn: State<Arc<tailnet::Tailnet>>) {
     tn.stop();
+}
+
+#[derive(Serialize)]
+struct Identity {
+    login: String,   // 验证过的 SSO 登录名（空=未连 tailnet / 未登录）
+    display: String,
+    name: String,    // 派生的 unix 账号句柄
+}
+
+// 当前验证过的团队身份（来自 tailnet SSO 登录）。团队写操作据此防冒名。
+#[tauri::command]
+fn tailnet_identity(tn: State<Arc<tailnet::Tailnet>>) -> Identity {
+    match tn.status().identity() {
+        Some((login, display)) => Identity {
+            name: team::slug_login(&login),
+            login,
+            display,
+        },
+        None => Identity { login: String::new(), display: String::new(), name: String::new() },
+    }
 }
 
 // ── 凭据命令 ─────────────────────────────────────────────
@@ -803,6 +925,8 @@ pub fn run() {
             share_server,
             unshare_server,
             compile_acl,
+            bind_github,
+            sync_github,
             team_git_status,
             team_git_pull,
             team_git_push,
@@ -812,6 +936,7 @@ pub fn run() {
             tailnet_status,
             tailnet_up,
             tailnet_down,
+            tailnet_identity,
             save_credential,
             del_credential,
             ssh_open,

@@ -88,6 +88,14 @@ export const tauriData: DataSource = {
     return invoke("compile_acl", { path }) as Promise<import("./index").AclPlan>;
   },
 
+  async bindGithub(path: string, org: string, roleMap: Record<string, string>): Promise<void> {
+    await invoke("bind_github", { path, org, roleMap });
+  },
+
+  syncGithub(path: string, token?: string) {
+    return invoke("sync_github", { path, token: token || null }) as Promise<{ count: number; with_keys: number; members: { login: string; pubkeys: string[]; role: string }[] }>;
+  },
+
   readTeamView(path: string) {
     return invoke("read_team_view", { path }) as Promise<import("./index").TeamView>;
   },
@@ -96,8 +104,8 @@ export const tauriData: DataSource = {
     await invoke("create_team", { path, teamName, member, pubkey, role: role ?? null });
   },
 
-  addMember(path: string, name: string, pubkey: string, role?: string) {
-    return invoke("add_member", { path, name, pubkey, role: role ?? null }) as Promise<import("./index").TeamView>;
+  addMember(path: string, name: string, pubkey: string, role?: string, identity?: string) {
+    return invoke("add_member", { path, name, pubkey, role: role ?? null, identity: identity ?? null }) as Promise<import("./index").TeamView>;
   },
 
   shareServer(teamPath: string, member: string, server: string, grants: Record<string, number>) {
@@ -126,6 +134,10 @@ export const tauriData: DataSource = {
 
   async tailnetDown(): Promise<void> {
     await invoke("tailnet_down");
+  },
+
+  tailnetIdentity() {
+    return invoke("tailnet_identity") as Promise<{ login: string; display: string; name: string }>;
   },
 
   async pickTeamSavePath(): Promise<string | null> {

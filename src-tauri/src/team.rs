@@ -14,13 +14,16 @@ use serde::{Deserialize, Serialize};
 
 // ── 磁盘结构 ──────────────────────────────────────────────
 
-// 团队级 team.yaml：只定义角色。
+// 团队级 team.yaml：定义角色 + 可选的 GitHub org 绑定（花名册自动导出）。
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct TeamRoot {
     pub team: String,
     // 角色名 → 权限档位。core=2(sudo) / member=1(受限) / guest=0(纯跳板)。
     #[serde(default = "default_roles")]
     pub roles: BTreeMap<String, Role>,
+    // 绑定 GitHub org：成员/公钥/角色从 org 自动导出，不用每人手动登记。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<crate::github::GithubBinding>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -46,7 +49,11 @@ pub struct MemberFile {
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct Member {
-    pub name: String,
+    pub name: String, // unix 账号句柄（下发时建的账号名）
+    // 验证过的身份 = 团队 IdP 的 SSO 登录名（邮箱/类邮箱）。不可伪造，是防冒名的锚。
+    // 空 = 未验证（旧数据 / 未连 tailnet 时登记）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub identity: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub pubkey: String,
     // 我在团队里的角色（引用 team.yaml 的 roles 键）。缺省 member。
@@ -56,6 +63,22 @@ pub struct Member {
 
 fn default_role() -> String {
     "member".into()
+}
+
+// SSO 登录名（如 guohao2045@gmail.com）→ 合法 unix 账号句柄。
+pub fn slug_login(login: &str) -> String {
+    let local = login.split('@').next().unwrap_or(login);
+    let mut out: String = local
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
+        .collect();
+    out = out.trim_matches('-').to_string();
+    // 首字符必须是字母或下划线
+    if out.is_empty() || out.as_bytes()[0].is_ascii_digit() {
+        out = format!("u{out}");
+    }
+    out.chars().take(32).collect()
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -104,6 +127,7 @@ pub struct ViewMachine {
 #[derive(Serialize, Clone, Debug)]
 pub struct ViewMember {
     pub name: String,
+    pub identity: String, // 验证过的 SSO 身份（空=未验证）
     pub pubkey: String,
     pub role: String,
 }
@@ -170,6 +194,7 @@ pub fn merge(root: &TeamRoot, members: &[MemberFile]) -> TeamView {
     for mf in members {
         view_members.push(ViewMember {
             name: mf.member.name.clone(),
+            identity: mf.member.identity.clone(),
             pubkey: mf.member.pubkey.clone(),
             role: mf.member.role.clone(),
         });
@@ -196,6 +221,34 @@ pub fn merge(root: &TeamRoot, members: &[MemberFile]) -> TeamView {
         members: view_members,
         machines: view_machines,
     }
+}
+
+// 把 GitHub org 拉来的花名册折叠进视图：org 成员即团队成员（公钥/角色自动）。
+// 与手写 members/*.yaml 合并：手写档若已存在同名成员，保留其（可能更细的）本地设置，
+// 但补上从 GitHub 拉到的公钥（本地缺时）。GitHub 独有的成员按 login 派生账号名加入。
+pub fn fold_github(view: &mut TeamView, gh: &[crate::github::GhMember]) {
+    for m in gh {
+        let name = slug_login(&m.login);
+        let first_key = m.pubkeys.first().cloned().unwrap_or_default();
+        if let Some(existing) = view.members.iter_mut().find(|v| v.name == name || v.identity == m.login) {
+            // 手写档优先，但补公钥/身份。
+            if existing.pubkey.is_empty() {
+                existing.pubkey = first_key;
+            }
+            if existing.identity.is_empty() {
+                existing.identity = m.login.clone();
+            }
+        } else {
+            view.members.push(ViewMember {
+                name,
+                identity: m.login.clone(), // GitHub login 即验证身份锚
+                pubkey: first_key,
+                role: m.role.clone(),
+            });
+        }
+    }
+    view.members.sort_by(|a, b| a.name.cmp(&b.name));
+    view.members.dedup_by(|a, b| a.name == b.name);
 }
 
 // ── 兼容旧的平表 team.yaml（迁移一版）─────────────────────
@@ -242,6 +295,7 @@ pub fn migrate_flat(text: &str) -> Option<(TeamRoot, Vec<MemberFile>)> {
     let root = TeamRoot {
         team: old.team,
         roles: default_roles(),
+        github: None,
     };
     // 旧平表没有"谁贡献了哪台机"的归属信息 —— 全部归到第一个成员名下（迁移的近似）。
     let owner = old.members.first().map(|m| m.name.clone()).unwrap_or_else(|| "owner".into());
@@ -261,25 +315,22 @@ pub fn migrate_flat(text: &str) -> Option<(TeamRoot, Vec<MemberFile>)> {
     // 每个旧成员成一份文件；机器挂在 owner 那份下。
     let mut files = Vec::new();
     for (i, mem) in old.members.iter().enumerate() {
+        let _ = i;
         files.push(MemberFile {
             member: Member {
                 name: mem.name.clone(),
+                identity: String::new(), // 旧数据无验证身份
                 pubkey: mem.pubkey.clone(),
                 role: default_role(),
             },
-            machines: if mem.name == owner && i == 0 {
-                // 只在 owner 第一份塞机器（下面替换）
-                vec![]
-            } else {
-                vec![]
-            },
+            machines: vec![],
         });
     }
     if let Some(f) = files.iter_mut().find(|f| f.member.name == owner) {
         f.machines = machines;
     } else {
         files.push(MemberFile {
-            member: Member { name: owner, pubkey: String::new(), role: default_role() },
+            member: Member { name: owner, identity: String::new(), pubkey: String::new(), role: default_role() },
             machines,
         });
     }
@@ -292,6 +343,7 @@ pub fn new_root(team: &str) -> TeamRoot {
     TeamRoot {
         team: team.trim().to_string(),
         roles: default_roles(),
+        github: None,
     }
 }
 
@@ -299,6 +351,7 @@ pub fn new_member_file(name: &str, pubkey: &str, role: &str) -> MemberFile {
     MemberFile {
         member: Member {
             name: name.trim().into(),
+            identity: String::new(),
             pubkey: pubkey.trim().into(),
             role: if role.is_empty() { default_role() } else { role.into() },
         },
@@ -325,6 +378,36 @@ mod tests {
 
     fn root() -> TeamRoot {
         parse_root("team: neuroai\nroles:\n  core: {tier: 2}\n  member: {tier: 1}\n  guest: {tier: 0}\n").unwrap()
+    }
+
+    #[test]
+    fn fold_github_adds_and_enriches() {
+        use crate::github::GhMember;
+        // 本地手写档：alice(core, 无公钥)
+        let af = new_member_file("alice", "", "core");
+        let mut view = merge(&root(), &[af]);
+        let gh = vec![
+            GhMember { login: "alice".into(), pubkeys: vec!["ssh-ed25519 KA".into()], role: "member".into() },
+            GhMember { login: "bob".into(), pubkeys: vec!["ssh-ed25519 KB".into()], role: "guest".into() },
+        ];
+        fold_github(&mut view, &gh);
+        // alice：本地档保留（角色仍 core），但补上 GitHub 公钥
+        let alice = view.members.iter().find(|m| m.name == "alice").unwrap();
+        assert_eq!(alice.role, "core", "本地手写角色优先");
+        assert_eq!(alice.pubkey, "ssh-ed25519 KA", "补上 GitHub 公钥");
+        // bob：GitHub 独有 → 自动加入，角色来自 GitHub 映射
+        let bob = view.members.iter().find(|m| m.name == "bob").unwrap();
+        assert_eq!(bob.role, "guest");
+        assert_eq!(bob.identity, "bob");
+        assert_eq!(view.members.len(), 2);
+    }
+
+    #[test]
+    fn slug_login_makes_unix_name() {
+        assert_eq!(slug_login("guohao2045@gmail.com"), "guohao2045");
+        assert_eq!(slug_login("Alice.Smith@github"), "alice-smith");
+        assert_eq!(slug_login("123@x.com"), "u123"); // 数字开头 → 前缀 u
+        assert_eq!(slug_login("bob"), "bob");
     }
 
     #[test]

@@ -62,10 +62,14 @@ export interface DataSource {
   // 把 team.yaml 的 tier 档位编译成 Tailscale ACL 计划（只产出计划，不改 tailnet）。
   compileAcl(path: string): Promise<AclPlan>;
 
+  // ── GitHub org 花名册：成员/公钥/角色自动导出，消掉手动登记 ──
+  bindGithub(path: string, org: string, roleMap: Record<string, string>): Promise<void>;
+  syncGithub(path: string, token?: string): Promise<{ count: number; with_keys: number; members: { login: string; pubkeys: string[]; role: string }[] }>;
+
   // ── 贡献侧：把自己的机器给团队（共享拓扑，凭据不出本机）──
   readTeamView(path: string): Promise<TeamView>; // 合并视图（成员/机器/角色），也是拓扑图数据源
   createTeam(path: string, teamName: string, member: string, pubkey: string, role?: string): Promise<void>;
-  addMember(path: string, name: string, pubkey: string, role?: string): Promise<TeamView>;
+  addMember(path: string, name: string, pubkey: string, role?: string, identity?: string): Promise<TeamView>;
   // grants = 角色→档位（RBAC）；member = 我是谁（写进我的 members/<我>.yaml）
   shareServer(teamPath: string, member: string, server: string, grants: Record<string, number>): Promise<Server[]>;
   unshareServer(teamPath: string, member: string, server: string): Promise<Server[]>;
@@ -78,6 +82,8 @@ export interface DataSource {
   tailnetStatus(): Promise<TailnetStatus>;
   tailnetUp(authkey: string, ingress: boolean): Promise<void>;
   tailnetDown(): Promise<void>;
+  // 验证过的团队身份（来自 tailnet SSO 登录）。login 为空 = 未连/未登录。
+  tailnetIdentity(): Promise<{ login: string; display: string; name: string }>;
 
   // ── 授权下发：让队友真能登进去（先 preview 看脚本，再 apply 执行）。档位按角色自动算 ──
   provisionPreview(teamPath: string, server: string): Promise<ProvisionPlan>;
@@ -108,6 +114,8 @@ export interface TailnetStatus {
   auth_url?: string; // 需要浏览器登录时的 URL（没填 authkey 时）
   socks?: string;
   ingress?: boolean;
+  login?: string;   // 验证过的 SSO 登录名
+  display?: string;
   error?: string;
 }
 
@@ -124,7 +132,7 @@ export interface SelfNode {
 export interface TeamView {
   team: string;
   roles: Record<string, { tier: number }>;
-  members: { name: string; pubkey: string; role: string }[];
+  members: { name: string; identity: string; pubkey: string; role: string }[];
   machines: {
     name: string; host: string; port: number; jump?: string | null;
     username: string; transport: string;

@@ -29,8 +29,24 @@ pub struct TailnetStatus {
     pub socks: String,
     #[serde(default)]
     pub ingress: bool,
+    // 验证过的身份（团队 IdP 的 SSO 登录，不可伪造）。
+    #[serde(default)]
+    pub login: String,
+    #[serde(default)]
+    pub display: String,
     #[serde(default)]
     pub error: String,
+}
+
+impl TailnetStatus {
+    // 已登录且拿到身份 → 返回 (login, display)。用于团队操作的可验证身份锚。
+    pub fn identity(&self) -> Option<(String, String)> {
+        if self.state == "running" && !self.login.is_empty() {
+            Some((self.login.clone(), self.display.clone()))
+        } else {
+            None
+        }
+    }
 }
 
 pub struct Tailnet {

@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::{acl, provision, store, team};
+use crate::{acl, github, provision, store, team};
 
 const ALICE_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAlice alice@mac";
 const BOB_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBob bob@thinkpad";
@@ -184,4 +184,57 @@ fn shared_machine_with_jump_needs_its_jump() {
     let a = acl::compile(&view);
     let jm = a.machines.iter().find(|m| m.name == "alice-mac").unwrap();
     assert!(!jm.command.contains("--ssh"));
+}
+
+// GitHub 花名册端到端：绑定 org 声明 → 缓存花名册 → merge+fold → 视图被 org 成员填满。
+// 这是 UI「绑定并同步」背后的完整胶水（不含网络那一跳：网络已单独实测）。
+#[test]
+fn github_roster_folds_into_view() {
+    let dir = fresh("gh-fold");
+    // team.yaml 绑定 org（core-team→core，其余→member）
+    let team_yaml = format!(
+        "team: neuroai\nroles:\n  core: {{tier: 2}}\n  member: {{tier: 1}}\n  guest: {{tier: 0}}\ngithub:\n  org: neuroai-lab\n  role_map:\n    core-team: core\n    '*': member\n"
+    );
+    std::fs::write(dir.join("team.yaml"), &team_yaml).unwrap();
+    let root = team::parse_root(&team_yaml).unwrap();
+    assert!(root.github.is_some(), "绑定被解析出来");
+
+    // 模拟同步：把拉到的花名册缓存到本地（sync_github 干的事）
+    let roster = vec![
+        github::GhMember { login: "alice".into(), pubkeys: vec!["ssh-ed25519 KA".into()], role: "core".into() },
+        github::GhMember { login: "bob".into(), pubkeys: vec!["ssh-ed25519 KB".into()], role: "member".into() },
+        github::GhMember { login: "carol".into(), pubkeys: vec![], role: "member".into() }, // 没配公钥
+    ];
+    std::fs::write(dir.join(".github-roster.json"), serde_json::to_string(&roster).unwrap()).unwrap();
+
+    // load_view 等价：merge（无手写成员）+ fold 缓存花名册
+    let mut view = team::merge(&root, &[]);
+    let cache: Vec<github::GhMember> =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(".github-roster.json")).unwrap()).unwrap();
+    team::fold_github(&mut view, &cache);
+
+    // org 三人全进来，角色/公钥/身份到位
+    assert_eq!(view.members.len(), 3);
+    let by = |n: &str| view.members.iter().find(|m| m.name == n).unwrap();
+    assert_eq!(by("alice").role, "core");
+    assert_eq!(by("alice").identity, "alice"); // GitHub login = 身份锚
+    assert_eq!(by("alice").pubkey, "ssh-ed25519 KA");
+    assert_eq!(by("bob").role, "member");
+    assert_eq!(by("carol").pubkey, "", "没配公钥的成员：空，UI 会提示");
+
+    // 授权下发：有公钥的 org 成员按角色建账号（carol 无公钥 → 跳过并警告）
+    let mut alice = team::new_member_file("alice", ALICE_KEY, "core");
+    team::upsert_machine(&mut alice, team::Machine {
+        name: "gpu".into(), host: "10.0.0.1".into(), port: 22, jump: None,
+        username: String::new(), transport: "direct".into(),
+        grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
+    });
+    let mut v2 = team::merge(&root, &[alice]);
+    team::fold_github(&mut v2, &cache);
+    let plan = provision::plan(&v2, "gpu").unwrap();
+    // alice(core)→sudo, bob(member)→无sudo, carol 无公钥→跳过
+    assert!(plan.accounts.iter().find(|a| a.name == "alice").unwrap().sudo);
+    assert!(!plan.accounts.iter().find(|a| a.name == "bob").unwrap().sudo);
+    assert!(plan.accounts.iter().all(|a| a.name != "carol"));
+    assert!(plan.warnings.iter().any(|w| w.contains("carol") && w.contains("没有公钥")));
 }

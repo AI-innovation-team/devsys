@@ -154,6 +154,7 @@ export function App() {
           <Team
             reload={reload}
             goServers={() => setView("servers")}
+            goSettings={() => setView("settings")}
             teamPath={teamPath}
             setTeamPath={setTeamPath}
           />

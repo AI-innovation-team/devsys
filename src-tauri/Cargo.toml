@@ -20,6 +20,7 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9" # team.yaml 解析（团队共享配置）
+ureq = { version = "2", features = ["json"] } # GitHub API 拉取花名册/公钥（轻量，纯 Rust TLS）
 # 凭据存加密保险库（Stronghold，主密码 + Argon2）。全平台一致，含移动端。
 iota_stronghold = "2"
 argon2 = "0.5"
