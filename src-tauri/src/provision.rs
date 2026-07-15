@@ -1,18 +1,16 @@
-// 授权下发:把 team.yaml 里成员的公钥,按 tier 档位真正装进被共享机。
+// 授权下发:把成员的公钥,按「角色 × 机器 grant」算出的档位,真正装进被共享机。
 //
 // 这是「共享」从"拓扑可见"变成"队友真能登进去"的那一步(v1 过渡方案,不等 tailnet sidecar)。
 // 终态会换成 Tailscale SSH + ACL(见 acl.rs),那时 authorized_keys 这套退役。
 //
-// 档位如何兑现(门禁 + 屋内 一起做):
-//   tier 0 纯跳板   → 不建任何账号、不装任何公钥(只借道转发)
-//   tier 1 受限计算 → 每位成员一个**独立账号**(身份到人)、**无 sudo**、装其公钥
-//   tier 2 完全信任 → 同上 + sudo(仅核心成员)
+// RBAC:同一台机,不同角色不同档 —— core 成员拿 sudo、member 只受限、guest 只借跳板。
+// 每个成员的实际档位 = 该机对他角色开的 grant。于是**一台机的下发脚本里,不同人不同权限**。
+//   档 0 → 不建账号(纯跳板) · 档 1 → 独立账号无 sudo · 档 2 → 独立账号 + sudo
 //
-// **安全**:成员名与公钥来自 team.yaml,会被拼进以 root 运行的脚本 —— 必须严格校验,
-// 拒绝一切可能逃逸出 shell 单引号的输入。校验不通过 = 拒绝生成脚本(不做转义兜底)。
+// **安全**:成员名与公钥拼进以 root 运行的脚本 —— 严格校验,拒绝一切可逃逸字符,不做转义兜底。
 use serde::Serialize;
 
-use crate::team::TeamConfig;
+use crate::team::TeamView;
 
 // 合法 unix 用户名:字母/下划线开头,后跟字母数字/下划线/连字符,≤32。
 fn valid_user(s: &str) -> bool {
@@ -63,58 +61,71 @@ fn valid_pubkey(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
 }
 
+// 一个将被建立的账号（身份到人）及其从 RBAC 算出的档位。
+#[derive(Serialize, Debug, PartialEq, Clone)]
+pub struct Account {
+    pub name: String,
+    pub role: String,
+    pub tier: u8,
+    pub sudo: bool,
+}
+
 #[derive(Serialize, Debug, PartialEq)]
 pub struct ProvisionPlan {
     pub server: String,
-    pub tier: u8,
-    pub accounts: Vec<String>, // 将建立/更新的账号(= 团队成员，身份到人)
-    pub sudo: bool,            // tier 2 才给
-    pub script: String,        // 要在被共享机上以 root 执行的脚本
+    pub accounts: Vec<Account>, // 每个可登入成员一条（含各自档位/是否 sudo）
+    pub any_sudo: bool,
+    pub script: String,
     pub warnings: Vec<String>,
 }
 
-// 为一台机生成下发脚本。cfg 提供成员与公钥;tier 决定开多大权。
+// 为一台机生成下发脚本。档位对每个成员分别算 = 该机对其角色开的 grant。
 // 校验失败(非法用户名/公钥)直接报错 —— 宁可拒绝，也不把可疑输入送进 root 脚本。
-pub fn plan(cfg: &TeamConfig, server: &str, tier: u8) -> Result<ProvisionPlan, String> {
+pub fn plan(view: &TeamView, server: &str) -> Result<ProvisionPlan, String> {
+    let machine = view
+        .machines
+        .iter()
+        .find(|m| m.name == server)
+        .ok_or_else(|| format!("团队里没有机器 {server}"))?;
+
     let mut warnings = Vec::new();
-
-    // tier 0 = 纯跳板:不给 shell，不建账号。
-    if tier == 0 {
-        return Ok(ProvisionPlan {
-            server: server.into(),
-            tier,
-            accounts: vec![],
-            sudo: false,
-            script: "# 档 0（纯跳板）：不建账号、不装公钥，只借道转发。无需下发。\n".into(),
-            warnings: vec!["档 0 只借道：队友无法在这台机上取得 shell。".into()],
-        });
-    }
-
-    let sudo = tier >= 2;
     let mut accounts = Vec::new();
     let mut blocks = Vec::new();
 
-    for m in &cfg.members {
-        if !valid_user(&m.name) {
+    for mem in &view.members {
+        let tier = view.effective_tier(machine, mem); // = grants[mem.role]
+        let Some(tier) = tier else {
+            continue; // 该角色未获授权 → 不建账号
+        };
+        if tier == 0 {
+            continue; // 纯跳板：不给 shell
+        }
+        if !valid_user(&mem.name) {
             return Err(format!(
                 "成员名 {:?} 不是合法的 unix 用户名（小写字母/数字/_/-，字母或_开头，≤32）",
-                m.name
+                mem.name
             ));
         }
-        if m.pubkey.trim().is_empty() {
-            warnings.push(format!("成员 {} 没有公钥 —— 已跳过，他将无法登入。", m.name));
+        if mem.pubkey.trim().is_empty() {
+            warnings.push(format!("成员 {} 没有公钥 —— 已跳过，他将无法登入。", mem.name));
             continue;
         }
-        let key = m.pubkey.trim();
+        let key = mem.pubkey.trim();
         if !valid_pubkey(key) {
-            return Err(format!("成员 {} 的公钥格式不合法（或含危险字符），已拒绝下发。", m.name));
+            return Err(format!("成员 {} 的公钥格式不合法（或含危险字符），已拒绝下发。", mem.name));
         }
-        accounts.push(m.name.clone());
+        let sudo = tier >= 2;
+        accounts.push(Account {
+            name: mem.name.clone(),
+            role: mem.role.clone(),
+            tier,
+            sudo,
+        });
 
         // 幂等:账号已存在则不动;公钥已在则不重复追加。
         blocks.push(format!(
             r#"
-# ── {name} ──────────────────────────────
+# ── {name}（{role}，档 {tier}）──────────────
 if id -u '{name}' >/dev/null 2>&1; then
   echo "  账号 {name} 已存在"
 else
@@ -130,56 +141,56 @@ fi
 chmod 600 "/home/{name}/.ssh/authorized_keys"
 chown -R '{name}':'{name}' "/home/{name}/.ssh"
 {sudo_block}"#,
-            name = m.name,
+            name = mem.name,
+            role = mem.role,
+            tier = tier,
             key = key,
             sudo_block = if sudo {
                 format!(
                     "printf '%s ALL=(ALL) NOPASSWD:ALL\\n' '{n}' > /etc/sudoers.d/devsys-{n}\nchmod 440 /etc/sudoers.d/devsys-{n}\necho \"  已给 {n} sudo（档 2）\"\n",
-                    n = m.name
+                    n = mem.name
                 )
             } else {
                 // 档 1:确保没有 sudo（清掉我们可能留下的旧授权）。
                 format!(
                     "rm -f /etc/sudoers.d/devsys-{n}\necho \"  {n} 无 sudo（档 1）\"\n",
-                    n = m.name
+                    n = mem.name
                 )
             },
         ));
     }
 
+    let any_sudo = accounts.iter().any(|a| a.sudo);
     if accounts.is_empty() {
-        warnings.push("没有任何可下发的成员公钥 —— 队友仍然登不进来。".into());
+        warnings.push("没有任何可下发的账号 —— 要么无成员获此机授权，要么成员缺公钥。队友仍登不进来。".into());
     }
-    if sudo {
-        warnings.push("档 2 会给这些账号 **sudo**（完全信任）—— 仅限核心成员，请确认。".into());
-    } else {
-        warnings.push(
-            "档 1 只保证「无 sudo + 独立账号」。资源限额（GPU/CPU/内存）与目录隔离仍需你自己配（cgroup / 容器）—— 这层我们替不了。"
-                .into(),
-        );
+    if any_sudo {
+        warnings.push("有成员获 **sudo**（档 2，完全信任）—— 仅限核心成员，请确认。".into());
     }
+    warnings.push(
+        "档 1（受限）只保证「无 sudo + 独立账号」。资源限额（GPU/CPU/内存）与目录隔离仍需你自己配（cgroup / 容器）—— 这层我们替不了。"
+            .into(),
+    );
 
     let script = format!(
         r#"#!/bin/sh
-# DevSys 授权下发 —— 服务器 {server}（档 {tier}）
+# DevSys 授权下发 —— 服务器 {server}
 # 由 app 生成，需以 root 执行。幂等：可重复运行。
-# 身份到人：每位成员一个独立账号，不用共享账号（否则操作追踪链会断）。
+# 身份到人 + RBAC：每位成员一个独立账号，权限按其角色定（core=sudo / member=受限）。
 set -e
 if [ "$(id -u)" -ne 0 ]; then echo "需要 root（请用 sudo 运行）" >&2; exit 1; fi
-echo "下发到 {server}（档 {tier}）："
+echo "下发到 {server}："
 {blocks}
 echo "完成。"
 "#,
         server = server,
-        tier = tier,
         blocks = blocks.join("")
     );
 
     Ok(ProvisionPlan {
         server: server.into(),
-        tier,
         accounts,
-        sudo,
+        any_sudo,
         script,
         warnings,
     })
@@ -188,95 +199,123 @@ echo "完成。"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::team::{TeamMachine, TeamMember};
+    use crate::team::{merge, new_member_file, upsert_machine, Machine, TeamRoot};
+    use std::collections::BTreeMap;
 
     const KEY_A: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample alice@mac";
 
-    fn cfg(members: &[(&str, &str)]) -> TeamConfig {
-        TeamConfig {
-            team: "neuroai".into(),
-            members: members
-                .iter()
-                .map(|(n, k)| TeamMember { name: (*n).into(), pubkey: (*k).into() })
-                .collect(),
-            machines: vec![TeamMachine {
-                name: "gpu".into(), host: "10.0.0.1".into(), port: 22,
-                jump: None, username: String::new(), transport: "direct".into(), tier: 1,
-            }],
+    fn root() -> TeamRoot {
+        crate::team::parse_root("team: neuroai\n").unwrap()
+    }
+
+    // 用一台机 gpu(grants) + 一组成员(name,pubkey,role) 构造视图。
+    fn view(grants: &[(&str, u8)], members: &[(&str, &str, &str)]) -> TeamView {
+        let g: BTreeMap<String, u8> = grants.iter().map(|(r, t)| (r.to_string(), *t)).collect();
+        // 机器挂在第一个成员名下
+        let owner = members.first().map(|m| m.0).unwrap_or("owner");
+        let mut files = Vec::new();
+        for (i, (n, k, role)) in members.iter().enumerate() {
+            let mut f = new_member_file(n, k, role);
+            if i == 0 {
+                upsert_machine(&mut f, Machine {
+                    name: "gpu".into(), host: "10.0.0.1".into(), port: 22, jump: None,
+                    username: String::new(), transport: "direct".into(), grants: g.clone(),
+                });
+            }
+            let _ = owner;
+            files.push(f);
         }
+        merge(&root(), &files)
     }
 
     #[test]
-    fn tier0_provisions_nothing() {
-        let p = plan(&cfg(&[("alice", KEY_A)]), "gpu", 0).unwrap();
+    fn guest_grant0_gets_no_account() {
+        // gpu 对 guest 开 0；dan 是 guest → 不建账号
+        let v = view(&[("guest", 0)], &[("dan", KEY_A, "guest")]);
+        let p = plan(&v, "gpu").unwrap();
         assert!(p.accounts.is_empty());
-        assert!(!p.script.contains("useradd"), "纯跳板不该建账号");
-        assert!(!p.sudo);
+        assert!(!p.script.contains("useradd"));
     }
 
     #[test]
-    fn tier1_creates_account_without_sudo() {
-        let p = plan(&cfg(&[("alice", KEY_A)]), "gpu", 1).unwrap();
-        assert_eq!(p.accounts, vec!["alice".to_string()]);
-        assert!(!p.sudo);
+    fn member_grant1_account_without_sudo() {
+        let v = view(&[("member", 1)], &[("alice", KEY_A, "member")]);
+        let p = plan(&v, "gpu").unwrap();
+        assert_eq!(p.accounts.len(), 1);
+        assert_eq!(p.accounts[0].tier, 1);
+        assert!(!p.accounts[0].sudo);
         assert!(p.script.contains("useradd -m -s /bin/bash 'alice'"));
         assert!(p.script.contains(KEY_A));
-        assert!(p.script.contains("rm -f /etc/sudoers.d/devsys-alice"), "档1 必须确保无 sudo");
-        assert!(!p.script.contains("NOPASSWD"), "档1 绝不能给 sudo");
-        assert!(p.warnings.iter().any(|w| w.contains("cgroup")), "须提示屋内层责任");
+        assert!(p.script.contains("rm -f /etc/sudoers.d/devsys-alice"));
+        assert!(!p.script.contains("NOPASSWD"));
     }
 
     #[test]
-    fn tier2_grants_sudo_and_warns() {
-        let p = plan(&cfg(&[("bob", KEY_A)]), "gpu", 2).unwrap();
-        assert!(p.sudo);
+    fn core_grant2_gets_sudo() {
+        let v = view(&[("core", 2)], &[("bob", KEY_A, "core")]);
+        let p = plan(&v, "gpu").unwrap();
+        assert!(p.accounts[0].sudo);
+        assert!(p.any_sudo);
         assert!(p.script.contains("NOPASSWD:ALL"));
         assert!(p.warnings.iter().any(|w| w.contains("sudo")));
     }
 
+    // ★ RBAC 核心：同一台机，不同角色不同权限
     #[test]
-    fn script_is_idempotent() {
-        let p = plan(&cfg(&[("alice", KEY_A)]), "gpu", 1).unwrap();
-        assert!(p.script.contains("id -u 'alice'"), "账号已存在则不重建");
-        assert!(p.script.contains("grep -qxF"), "公钥已在则不重复追加");
+    fn same_machine_different_roles_different_tiers() {
+        let v = view(
+            &[("core", 2), ("member", 1), ("guest", 0)],
+            &[("alice", KEY_A, "core"), ("bob", KEY_A, "member"), ("dan", KEY_A, "guest")],
+        );
+        let p = plan(&v, "gpu").unwrap();
+        // alice(core)→sudo, bob(member)→无sudo, dan(guest)→无账号
+        let acct = |n: &str| p.accounts.iter().find(|a| a.name == n);
+        assert!(acct("alice").unwrap().sudo, "core 拿 sudo");
+        assert!(!acct("bob").unwrap().sudo, "member 无 sudo");
+        assert!(acct("dan").is_none(), "guest(档0) 不建账号");
+        assert!(p.script.contains("useradd -m -s /bin/bash 'alice'"));
+        assert!(p.script.contains("useradd -m -s /bin/bash 'bob'"));
     }
 
     #[test]
-    fn per_member_accounts_not_shared() {
-        let p = plan(&cfg(&[("alice", KEY_A), ("bob", KEY_A)]), "gpu", 1).unwrap();
-        assert_eq!(p.accounts, vec!["alice".to_string(), "bob".to_string()]);
-        // 身份到人：两个独立账号，不是一个共享号。
-        assert!(p.script.contains("useradd -m -s /bin/bash 'alice'"));
-        assert!(p.script.contains("useradd -m -s /bin/bash 'bob'"));
+    fn script_is_idempotent() {
+        let v = view(&[("member", 1)], &[("alice", KEY_A, "member")]);
+        let p = plan(&v, "gpu").unwrap();
+        assert!(p.script.contains("id -u 'alice'"));
+        assert!(p.script.contains("grep -qxF"));
     }
 
     // ── 注入防御（安全关键）──────────────────────────────
     #[test]
     fn rejects_shell_injection_in_username() {
         for bad in ["alice'; rm -rf /;'", "root ALL", "a b", "Alice", "1alice", "a".repeat(33).as_str()] {
-            assert!(plan(&cfg(&[(bad, KEY_A)]), "gpu", 1).is_err(), "应拒绝: {bad}");
+            let v = view(&[("member", 1)], &[(bad, KEY_A, "member")]);
+            assert!(plan(&v, "gpu").is_err(), "应拒绝: {bad}");
         }
     }
 
     #[test]
     fn rejects_injection_in_pubkey() {
         let bads = [
-            "ssh-ed25519 AAAA'; rm -rf / ;'",           // 单引号逃逸
-            "ssh-ed25519 AAAA\nroot ALL=(ALL) NOPASSWD", // 换行注入第二行
-            "ssh-ed25519 AAAA`whoami`",                  // 命令替换
-            "ssh-ed25519 AAAA$(id)",                     // 命令替换
-            "not-a-key AAAA",                            // 未知类型
-            "ssh-ed25519",                               // 缺主体
+            "ssh-ed25519 AAAA'; rm -rf / ;'",
+            "ssh-ed25519 AAAA\nroot ALL=(ALL) NOPASSWD",
+            "ssh-ed25519 AAAA`whoami`",
+            "ssh-ed25519 AAAA$(id)",
+            "not-a-key AAAA",
+            "ssh-ed25519",
         ];
         for bad in bads {
-            assert!(plan(&cfg(&[("alice", bad)]), "gpu", 1).is_err(), "应拒绝: {bad:?}");
+            let v = view(&[("member", 1)], &[("alice", bad, "member")]);
+            assert!(plan(&v, "gpu").is_err(), "应拒绝: {bad:?}");
         }
     }
 
     #[test]
     fn member_without_pubkey_is_skipped_with_warning() {
-        let p = plan(&cfg(&[("alice", ""), ("bob", KEY_A)]), "gpu", 1).unwrap();
-        assert_eq!(p.accounts, vec!["bob".to_string()]);
+        let v = view(&[("member", 1)], &[("alice", "", "member"), ("bob", KEY_A, "member")]);
+        let p = plan(&v, "gpu").unwrap();
+        assert_eq!(p.accounts.len(), 1);
+        assert_eq!(p.accounts[0].name, "bob");
         assert!(p.warnings.iter().any(|w| w.contains("alice") && w.contains("没有公钥")));
     }
 }

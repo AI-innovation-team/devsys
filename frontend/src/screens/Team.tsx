@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { data, type AclPlan, type GitStatus, type TeamConfig } from "../data";
+import { data, type AclPlan, type GitStatus, type TeamView } from "../data";
+import { TeamGraph } from "../components/TeamGraph";
 import { Icon } from "../icons";
-
-const TIER_LABEL: Record<number, string> = { 0: "纯跳板", 1: "受限计算", 2: "完全信任" };
 
 // 「团队」。一份共享 team.yaml = 成员公钥 + 共享机器（拓扑 + 开放档位），协调器极轻。
 //   消费侧：加载 → 团队机作为只读节点进列表，你用自己的凭据连。
@@ -25,7 +24,7 @@ export function Team({
   const [done, setDone] = useState<{ team: string; added: number; skipped: string[] } | null>(null);
   const [plan, setPlan] = useState<AclPlan | null>(null);
   const [copied, setCopied] = useState(false);
-  const [cfg, setCfg] = useState<TeamConfig | null>(null);
+  const [cfg, setCfg] = useState<TeamView | null>(null);
 
   // 建团队 / 邀成员
   const [creating, setCreating] = useState(false);
@@ -36,6 +35,7 @@ export function Team({
   const [addingMember, setAddingMember] = useState(false);
   const [newMember, setNewMember] = useState("");
   const [newKey, setNewKey] = useState("");
+  const [newRole, setNewRole] = useState("member");
 
   // git 同步（配置即代码：团队配置放 git 仓库，每人维护自己那段）
   const [git, setGit] = useState<GitStatus | null>(null);
@@ -47,9 +47,21 @@ export function Team({
   useEffect(() => { data.myPubkeys().then((k) => { setPubkeys(k); setPubkey(k[0] || ""); }).catch(() => {}); }, []);
   useEffect(() => {
     if (!teamPath) { setCfg(null); setGit(null); return; }
-    data.readTeamFile(teamPath).then(setCfg).catch(() => setCfg(null));
+    data.readTeamView(teamPath).then(setCfg).catch(() => setCfg(null));
     data.teamGitStatus(teamPath).then(setGit).catch(() => setGit(null));
   }, [teamPath, done, tick]);
+
+  // 读侧积极自动：进团队时后台 ff-only 拉一次（安全：拉不动就静默停，不自动 merge）。
+  const autoPulled = useRef("");
+  useEffect(() => {
+    if (!teamPath || autoPulled.current === teamPath) return;
+    autoPulled.current = teamPath;
+    data.teamGitStatus(teamPath).then((st) => {
+      if (st.is_repo && st.has_remote) {
+        data.teamGitPull(teamPath).then(() => setTick((t) => t + 1)).catch(() => {});
+      }
+    }).catch(() => {});
+  }, [teamPath]);
 
   const gitPull = async () => {
     setBusy(true); setErr(""); setGitLog("");
@@ -124,7 +136,7 @@ export function Team({
     if (!newMember.trim() || !newKey.trim()) { setErr("成员名与公钥都要填"); return; }
     setBusy(true); setErr("");
     try {
-      setCfg(await data.addMember(teamPath, newMember.trim(), newKey.trim()));
+      setCfg(await data.addMember(teamPath, newMember.trim(), newKey.trim(), newRole));
       setNewMember(""); setNewKey(""); setAddingMember(false);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -134,7 +146,8 @@ export function Team({
   const policyJson = plan
     ? JSON.stringify(
         {
-          tagOwners: Object.fromEntries(plan.tag_owners.map((t) => [t, [plan.group]])),
+          tagOwners: Object.fromEntries(plan.tag_owners.map((t) => [t, plan.groups.map(([g]) => g)])),
+          groups: Object.fromEntries(plan.groups.map(([g, ms]) => [g, ms])),
           ssh: plan.ssh.map((r) => ({
             action: r.action, src: r.src, dst: r.dst, users: r.users,
             ...(r.check_period ? { checkPeriod: r.check_period } : {}),
@@ -277,8 +290,9 @@ export function Team({
                 <div key={m.name} className="mem">
                   <span className="avatar" style={{ width: 26, height: 26, fontSize: 11 }}>{m.name.slice(0, 1).toUpperCase()}</span>
                   <span className="mem-name">{m.name}</span>
+                  <span className={"role-tag " + m.role}>{m.role}</span>
                   <span className={"mem-key" + (m.pubkey ? "" : " none")}>
-                    {m.pubkey ? m.pubkey.split(" ").slice(0, 2).join(" ").slice(0, 44) + "…" : "无公钥 · 登不进来"}
+                    {m.pubkey ? m.pubkey.split(" ").slice(0, 2).join(" ").slice(0, 40) + "…" : "无公钥 · 登不进来"}
                   </span>
                 </div>
               ))}
@@ -300,6 +314,14 @@ export function Team({
                     </div>
                   </div>
                 </div>
+                <div className="field">
+                  <label>角色（决定他在各机上的权限档：core=sudo / member=受限 / guest=跳板）</label>
+                  <div className="seg">
+                    {Object.keys(cfg.roles).map((r) => (
+                      <button key={r} className={newRole === r ? "on" : ""} onClick={() => setNewRole(r)}>{r}</button>
+                    ))}
+                  </div>
+                </div>
                 <div className="cred-foot">
                   <button className="btn primary sm" disabled={busy} onClick={addMember}><Icon name="plus" />加入团队</button>
                   <button className="btn subtle sm" onClick={() => setAddingMember(false)}>取消</button>
@@ -314,7 +336,23 @@ export function Team({
         </article>
       )}
 
-      {/* ③ 授权计划：tier → Tailscale ACL（终态；当前可先用「下发授权」走 authorized_keys） */}
+      {/* ③ 拓扑图：分文件 + RBAC 后数据天然成图 —— 谁把什么算力、以什么权限、给了谁 */}
+      {cfg && !creating && (cfg.machines.length > 0 || cfg.members.length > 1) && (
+        <article className="card open" style={{ marginTop: 16 }}>
+          <div className="cfg-head">
+            <div className="srv-title">
+              <span className="srv-name" style={{ fontSize: 17 }}>团队拓扑</span>
+              <span className="badge">{cfg.members.length} 人 · {cfg.machines.length} 机</span>
+            </div>
+          </div>
+          <div className="cfg-body">
+            <p className="acl-intro">谁把什么算力、以什么权限、给了谁 —— 悬停看细节。这就是团队的织物。</p>
+            <TeamGraph view={cfg} />
+          </div>
+        </article>
+      )}
+
+      {/* ④ 授权计划：RBAC → Tailscale ACL（终态；当前可先用「下发授权」走 authorized_keys） */}
       {plan && (
         <article className="card open" style={{ marginTop: 16 }}>
           <div className="cfg-head">
@@ -325,7 +363,7 @@ export function Team({
           </div>
           <div className="cfg-body">
             <p className="acl-intro">
-              把每台机的 <strong>tier 档位</strong>编译成 Tailscale policy（终态方案）。
+              把每台机的 <strong>RBAC 授权</strong>（角色→档位）编译成 Tailscale policy（终态方案）。
               <strong>我们不会替你改 tailnet</strong> —— 请 review 后自己贴进团队 policy。
               还没上 tailnet 的话，用「服务器」页每台机的<strong>下发授权</strong>（直接装公钥）即可先跑通。
             </p>
@@ -336,8 +374,8 @@ export function Team({
                 <div key={m.name} className="acl-machine">
                   <div className="acl-m-head">
                     <span className="acl-m-name">{m.name}</span>
-                    <span className={"acl-tier t" + m.tier}>档 {m.tier} · {TIER_LABEL[m.tier] ?? "?"}</span>
-                    <span className="acl-m-host">{m.host}</span>
+                    <span className="acl-grants">{m.grants_desc || "未授权"}</span>
+                    <span className="acl-m-host">{m.host} · {m.owner}</span>
                   </div>
                   <code className="acl-cmd">{m.command}</code>
                   <div className="acl-harden"><Icon name="shield" />{m.hardening}</div>

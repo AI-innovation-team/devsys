@@ -1,29 +1,23 @@
-// tier 档位 → Tailscale ACL policy 的「编译器」。
+// RBAC → Tailscale ACL policy 的「编译器」。
 //
-// 这是我们在整个栈里真正独有的那一层:把「团队要怎么共享」的**意图**(tier 档位),
-// 编译成底层现成工具(Tailscale)的配置。底层机制一律不自研 —— 同 SkyPilot / 沙箱的定位。
+// 我们独有的那一层：把「团队怎么共享」的**意图**（角色 × 机器 grant）编译成
+// 底层现成工具（Tailscale）的配置。底层机制不自研 —— 同 SkyPilot / 沙箱的定位。
 //
-// 两层要分清(Tailscale 只管前者):
+// 两层分清（Tailscale 只管前者）：
 //   门禁层 = 谁能进、以哪个 unix 用户进、要不要二次确认  ← 本文件产出
-//   屋内层 = 进来后能干什么(受限账号 / cgroup / 容器)   ← 机器主人的 OS 配置，另一回事
+//   屋内层 = 进来后能干什么（受限账号 / cgroup / 容器）   ← 机器主人的 OS 配置
 //
-// 档位语义:
-//   tier 0 纯跳板   → 只放转发(不给 shell):不生成 ssh 规则，只给 tag 打上可达
-//   tier 1 受限账号 → 以「各人自己的账号」登入(autogroup:nonroot)，action=accept
-//   tier 2 完全信任 → 同上但 action=check(每次高权限访问要 SSO 二次确认 = 轻量审批)
+// RBAC 模型：每个角色一个 group（成员按角色归入）；每台机对某角色开的 grant 决定规则：
+//   grant 0 → 纯跳板：不生成 ssh 规则（只借道）
+//   grant 1 → accept，以各人自己账号登入（autogroup:nonroot）
+//   grant 2 → check（每次 SSO 二次确认 = 轻量审批）
 //
-// 生成的是 policy **片段**(grants + tagOwners + ssh)，供人 review 后并进团队 policy。
-// 我们不代替用户直接改他的 tailnet —— 责任为门:机器主人自己拍板、自己贴。
+// 产出 policy 片段（groups + tagOwners + ssh），供人 review 后自己贴 —— 责任为门。
 use serde::Serialize;
 
-use crate::team::TeamConfig;
+use crate::team::TeamView;
 
-// 一台共享机在 tailnet 里的 tag(按团队 + 档位分池，便于 policy 里整池授权)。
-pub fn tag_for(team: &str, tier: u8) -> String {
-    format!("tag:{}-tier{}", slug(team), tier)
-}
-
-// 团队名 → tailscale tag 安全字符(小写字母数字与连字符)。
+// 团队名 → tailscale 安全字符（小写字母数字与连字符）。
 fn slug(s: &str) -> String {
     let out: String = s
         .trim()
@@ -35,110 +29,141 @@ fn slug(s: &str) -> String {
     if out.is_empty() { "team".into() } else { out }
 }
 
-#[derive(Serialize, Debug, PartialEq)]
-pub struct SshRule {
-    pub action: String,            // accept | check
-    pub src: Vec<String>,          // 谁能发起 = 团队 group
-    pub dst: Vec<String>,          // 连到哪些机 = 该档位的 tag 池
-    pub users: Vec<String>,        // 允许登入为哪个 unix 用户
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub check_period: Option<String>, // action=check 时的二次确认有效期
+// 一台机在 tailnet 里的 tag（按机器命名，一机一 tag）。
+pub fn tag_for(team: &str, machine: &str) -> String {
+    format!("tag:{}-{}", slug(team), slug(machine))
 }
 
-// 一台机的部署提示：主人需要在这台机上做什么(tailscale 命令 + 屋内层责任)。
+// 一个角色的 group 名。
+pub fn group_for(team: &str, role: &str) -> String {
+    format!("group:{}-{}", slug(team), slug(role))
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct SshRule {
+    pub action: String,   // accept | check
+    pub src: Vec<String>, // 谁能发起 = 某角色 group
+    pub dst: Vec<String>, // 连到哪台机 = 该机 tag
+    pub users: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_period: Option<String>,
+    pub role: String, // 这条规则对应哪个角色（给 UI 展示）
+}
+
+// 一台机的落地动作。
 #[derive(Serialize, Debug, PartialEq)]
 pub struct MachinePlan {
     pub name: String,
     pub host: String,
-    pub tier: u8,
     pub tag: String,
-    pub command: String,  // 在这台机上跑的 tailscale 命令
-    pub hardening: String, // 屋内层(OS/容器)责任提示 —— Tailscale 不管这层
+    pub owner: String,
+    pub command: String,   // 在这台机上跑的 tailscale 命令
+    pub grants_desc: String, // 人读的授权摘要，如 "core→2, member→1"
+    pub hardening: String,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
 pub struct AclPlan {
     pub team: String,
-    pub group: String,              // group:<team>
-    pub members: Vec<String>,       // 团队成员(进 group)
-    pub tag_owners: Vec<String>,    // 需要声明的 tag(tagOwners 段)
-    pub ssh: Vec<SshRule>,          // policy 的 ssh 段
-    pub machines: Vec<MachinePlan>, // 每台机的落地动作
-    pub notes: Vec<String>,         // 必须让人看到的边界与警告
+    pub groups: Vec<(String, Vec<String>)>, // group 名 → 成员名（各角色）
+    pub tag_owners: Vec<String>,
+    pub ssh: Vec<SshRule>,
+    pub machines: Vec<MachinePlan>,
+    pub notes: Vec<String>,
 }
 
-// 把一份 team.yaml 编译成 Tailscale ACL 计划。纯函数:不碰网络、不碰文件。
-pub fn compile(cfg: &TeamConfig) -> AclPlan {
-    let team = slug(&cfg.team);
-    let group = format!("group:{}", team);
-
-    // 按档位聚合:同档位的机器共用一个 tag 池，一条规则整池授权。
-    let mut tiers: Vec<u8> = cfg.machines.iter().map(|m| m.tier).collect();
-    tiers.sort_unstable();
-    tiers.dedup();
+// 把合并视图编译成 Tailscale ACL 计划。纯函数。
+pub fn compile(view: &TeamView) -> AclPlan {
+    // 每个角色一个 group（即使暂时没成员，也声明出来供规则引用）。
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for role in view.roles.keys() {
+        let mut names: Vec<String> = view
+            .members_of_role(role)
+            .iter()
+            .map(|m| m.name.clone())
+            .collect();
+        names.sort();
+        groups.push((group_for(&view.team, role), names));
+    }
 
     let mut ssh = Vec::new();
     let mut tag_owners = Vec::new();
-    for &t in &tiers {
-        let tag = tag_for(&cfg.team, t);
+    let mut any_sudo = false;
+
+    for m in &view.machines {
+        let tag = tag_for(&view.team, &m.name);
         tag_owners.push(tag.clone());
-        // tier 0 = 纯跳板:只借道，不给 shell → 不生成 ssh 规则。
-        if t == 0 {
-            continue;
+        // 该机对每个角色开的 grant → 一条规则（档 0 不发 ssh）。稳定顺序。
+        for role in view.machine_roles(m) {
+            let t = *m.grants.get(&role).unwrap_or(&0);
+            if t == 0 {
+                continue;
+            }
+            if t >= 2 {
+                any_sudo = true;
+            }
+            ssh.push(SshRule {
+                action: if t >= 2 { "check" } else { "accept" }.into(),
+                src: vec![group_for(&view.team, &role)],
+                dst: vec![tag.clone()],
+                users: vec!["autogroup:nonroot".into()],
+                check_period: if t >= 2 { Some("12h".into()) } else { None },
+                role,
+            });
         }
-        ssh.push(SshRule {
-            // tier 2 = 完全信任 → check(SSO 二次确认，轻量审批)；tier 1 → accept。
-            action: if t >= 2 { "check" } else { "accept" }.into(),
-            src: vec![group.clone()],
-            dst: vec![tag],
-            // 身份到人:登入为发起者自己的 unix 账号，不用共享账号 —— 追踪链不能断。
-            users: vec!["autogroup:nonroot".into()],
-            check_period: if t >= 2 { Some("12h".into()) } else { None },
-        });
     }
 
-    let machines = cfg
+    let machines = view
         .machines
         .iter()
         .map(|m| {
-            let tag = tag_for(&cfg.team, m.tier);
-            let command = if m.tier == 0 {
-                format!("tailscale up --advertise-tags={tag}") // 纯跳板:不开 --ssh
-            } else {
+            let tag = tag_for(&view.team, &m.name);
+            // 有任一角色 grant>0 才开 --ssh；全是 0（纯跳板）则不开。
+            let any_shell = m.grants.values().any(|&t| t > 0);
+            let command = if any_shell {
                 format!("tailscale up --ssh --advertise-tags={tag}")
+            } else {
+                format!("tailscale up --advertise-tags={tag}")
             };
-            let hardening = match m.tier {
-                0 => "纯跳板:不开 SSH server，只借道转发".into(),
-                1 => "为每位成员建独立账号(无 sudo)+ cgroup 限额；或把 shell 关进容器".into(),
-                _ => "完全信任(有 sudo):仅限核心成员；建议配合 session recording".into(),
+            let max_tier = m.grants.values().copied().max().unwrap_or(0);
+            let hardening = match max_tier {
+                0 => "纯跳板：不开 SSH server，只借道转发".into(),
+                1 => "为每位成员建独立账号（无 sudo）+ cgroup 限额；或把 shell 关进容器".into(),
+                _ => "有角色获 sudo（档 2）：仅限核心成员；建议配合 session recording".into(),
             };
+            let mut gd: Vec<String> = view
+                .machine_roles(m)
+                .iter()
+                .map(|r| format!("{r}→{}", m.grants.get(r).unwrap_or(&0)))
+                .collect();
+            gd.sort();
             MachinePlan {
                 name: m.name.clone(),
                 host: m.host.clone(),
-                tier: m.tier,
                 tag,
+                owner: m.owner.clone(),
                 command,
+                grants_desc: gd.join(", "),
                 hardening,
             }
         })
         .collect();
 
     let mut notes = vec![
-        "Tailscale 只管「门禁」(谁能进、以谁的身份进)；进来后能干什么由这台机的 OS 决定 —— 受限账号 / cgroup / 容器要机器主人自己配。".into(),
-        "身份到人:登入为各人自己的账号(autogroup:nonroot)，不用共享账号 —— 否则操作追踪链会断。".into(),
+        "Tailscale 只管「门禁」（谁能进、以谁的身份进）；进来能干什么由这台机的 OS 决定 —— 受限账号 / cgroup / 容器要机器主人自己配。".into(),
+        "身份到人：登入为各人自己的账号（autogroup:nonroot），不用共享账号 —— 否则操作追踪链会断。".into(),
         "这是 policy 片段，请 review 后并进团队 tailnet policy；app 不会替你改 tailnet。".into(),
     ];
-    if cfg.machines.iter().any(|m| m.tier >= 2) {
-        notes.push("有 tier 2(完全信任、可 sudo)的机器 —— 已用 action=check(12h SSO 二次确认)，请确认这是你想开的档。".into());
+    if any_sudo {
+        notes.push("有机器对某角色开了 sudo（档 2）—— 已用 action=check（12h SSO 二次确认），请确认这是你想开的档。".into());
     }
-    if cfg.members.is_empty() {
-        notes.push("team.yaml 里没有成员 —— group 为空，没人能连进来。".into());
+    if view.members.is_empty() {
+        notes.push("还没有成员 —— 所有 group 为空，没人能连进来。".into());
     }
 
     AclPlan {
-        team: cfg.team.clone(),
-        group,
-        members: cfg.members.iter().map(|m| m.name.clone()).collect(),
+        team: view.team.clone(),
+        groups,
         tag_owners,
         ssh,
         machines,
@@ -149,82 +174,83 @@ pub fn compile(cfg: &TeamConfig) -> AclPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::team::{TeamMachine, TeamMember};
+    use crate::team::{merge, new_member_file, upsert_machine, Machine};
+    use std::collections::BTreeMap;
 
-    fn cfg(tiers: &[u8]) -> TeamConfig {
-        TeamConfig {
-            team: "NeuroAI Lab".into(), // 带空格与大写，测 slug
-            members: vec![TeamMember { name: "alice".into(), pubkey: "K".into() }],
-            machines: tiers
-                .iter()
-                .enumerate()
-                .map(|(i, &t)| TeamMachine {
-                    name: format!("m{i}"),
-                    host: format!("10.0.0.{i}"),
-                    port: 22,
-                    jump: None,
-                    username: String::new(),
-                    transport: "tailnet".into(),
-                    tier: t,
-                })
-                .collect(),
-        }
+    fn root() -> crate::team::TeamRoot {
+        crate::team::parse_root("team: NeuroAI Lab\n").unwrap() // 带空格大写测 slug
+    }
+
+    // alice=core 贡献 gpu(core:2, member:1, guest:0)；bob=member；dan=guest
+    fn view() -> TeamView {
+        let mut af = new_member_file("alice", "KA", "core");
+        upsert_machine(&mut af, Machine {
+            name: "gpu".into(), host: "10.0.0.1".into(), port: 22, jump: None,
+            username: String::new(), transport: "tailnet".into(),
+            grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1), ("guest".into(), 0)]),
+        });
+        let bf = new_member_file("bob", "KB", "member");
+        let df = new_member_file("dan", "KD", "guest");
+        merge(&root(), &[af, bf, df])
     }
 
     #[test]
-    fn slugs_team_name_into_safe_tag() {
-        assert_eq!(tag_for("NeuroAI Lab", 1), "tag:neuroai-lab-tier1");
-        assert_eq!(tag_for("!!!", 1), "tag:team-tier1"); // 全非法字符 → 兜底
+    fn slugs_names() {
+        assert_eq!(tag_for("NeuroAI Lab", "gpu-01"), "tag:neuroai-lab-gpu-01");
+        assert_eq!(group_for("NeuroAI Lab", "core"), "group:neuroai-lab-core");
     }
 
     #[test]
-    fn tier1_is_accept_tier2_is_check() {
-        let plan = compile(&cfg(&[1, 2]));
-        assert_eq!(plan.group, "group:neuroai-lab");
-        assert_eq!(plan.ssh.len(), 2);
+    fn rules_per_role_by_grant() {
+        let p = compile(&view());
+        // gpu 对 core=2(check) / member=1(accept) / guest=0(无规则)
+        let core = p.ssh.iter().find(|r| r.role == "core").unwrap();
+        assert_eq!(core.action, "check");
+        assert_eq!(core.check_period.as_deref(), Some("12h"));
+        assert_eq!(core.src, vec!["group:neuroai-lab-core".to_string()]);
 
-        let t1 = plan.ssh.iter().find(|r| r.dst[0].ends_with("tier1")).unwrap();
-        assert_eq!(t1.action, "accept");
-        assert_eq!(t1.check_period, None);
-        assert_eq!(t1.users, vec!["autogroup:nonroot".to_string()]); // 身份到人
+        let member = p.ssh.iter().find(|r| r.role == "member").unwrap();
+        assert_eq!(member.action, "accept");
+        assert_eq!(member.check_period, None);
 
-        let t2 = plan.ssh.iter().find(|r| r.dst[0].ends_with("tier2")).unwrap();
-        assert_eq!(t2.action, "check"); // 高权限 → 二次确认
-        assert_eq!(t2.check_period.as_deref(), Some("12h"));
+        // guest grant=0 → 无 ssh 规则
+        assert!(p.ssh.iter().all(|r| r.role != "guest"));
     }
 
     #[test]
-    fn tier0_gets_no_ssh_rule_but_still_tagged() {
-        let plan = compile(&cfg(&[0]));
-        assert!(plan.ssh.is_empty(), "纯跳板不该给 shell");
-        assert_eq!(plan.tag_owners, vec!["tag:neuroai-lab-tier0".to_string()]);
-        assert!(!plan.machines[0].command.contains("--ssh"), "纯跳板不开 SSH server");
+    fn groups_list_members_by_role() {
+        let p = compile(&view());
+        let core = p.groups.iter().find(|(g, _)| g.ends_with("-core")).unwrap();
+        assert_eq!(core.1, vec!["alice".to_string()]);
+        let member = p.groups.iter().find(|(g, _)| g.ends_with("-member")).unwrap();
+        assert_eq!(member.1, vec!["bob".to_string()]);
     }
 
     #[test]
-    fn same_tier_machines_share_one_rule() {
-        let plan = compile(&cfg(&[1, 1, 1]));
-        assert_eq!(plan.ssh.len(), 1, "同档位机器共用一条规则(整池授权)");
-        assert_eq!(plan.machines.len(), 3);
-        assert!(plan.machines.iter().all(|m| m.tag == "tag:neuroai-lab-tier1"));
+    fn machine_opens_ssh_since_some_grant_positive() {
+        let p = compile(&view());
+        let gpu = p.machines.iter().find(|m| m.name == "gpu").unwrap();
+        assert!(gpu.command.contains("--ssh"));
+        assert_eq!(gpu.owner, "alice");
+        assert!(gpu.grants_desc.contains("core→2"));
     }
 
     #[test]
-    fn warns_on_tier2_and_empty_members() {
-        let plan = compile(&cfg(&[2]));
-        assert!(plan.notes.iter().any(|n| n.contains("tier 2")));
-
-        let mut c = cfg(&[1]);
-        c.members.clear();
-        let plan = compile(&c);
-        assert!(plan.notes.iter().any(|n| n.contains("没有成员")));
+    fn pure_jump_machine_no_ssh() {
+        let mut af = new_member_file("alice", "KA", "core");
+        upsert_machine(&mut af, Machine {
+            name: "bastion".into(), host: "1.1.1.1".into(), port: 22, jump: None,
+            username: String::new(), transport: "tailnet".into(),
+            grants: BTreeMap::from([("member".into(), 0), ("core".into(), 0)]),
+        });
+        let p = compile(&merge(&root(), &[af]));
+        assert!(p.ssh.is_empty(), "全 grant=0 → 无 ssh 规则");
+        assert!(!p.machines[0].command.contains("--ssh"));
     }
 
     #[test]
-    fn machine_plan_carries_hardening_duty() {
-        let plan = compile(&cfg(&[1]));
-        // 屋内层责任必须显式告知机器主人 —— Tailscale 不管这层。
-        assert!(plan.machines[0].hardening.contains("无 sudo"));
-        assert!(plan.notes.iter().any(|n| n.contains("门禁")));
+    fn warns_on_sudo() {
+        let p = compile(&view());
+        assert!(p.notes.iter().any(|n| n.contains("sudo")));
     }
 }

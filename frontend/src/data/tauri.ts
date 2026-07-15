@@ -88,24 +88,24 @@ export const tauriData: DataSource = {
     return invoke("compile_acl", { path }) as Promise<import("./index").AclPlan>;
   },
 
-  readTeamFile(path: string) {
-    return invoke("read_team_file", { path }) as Promise<import("./index").TeamConfig>;
+  readTeamView(path: string) {
+    return invoke("read_team_view", { path }) as Promise<import("./index").TeamView>;
   },
 
-  async createTeam(path: string, teamName: string, member: string, pubkey: string): Promise<void> {
-    await invoke("create_team", { path, teamName, member, pubkey });
+  async createTeam(path: string, teamName: string, member: string, pubkey: string, role?: string): Promise<void> {
+    await invoke("create_team", { path, teamName, member, pubkey, role: role ?? null });
   },
 
-  addMember(path: string, name: string, pubkey: string) {
-    return invoke("add_member", { path, name, pubkey }) as Promise<import("./index").TeamConfig>;
+  addMember(path: string, name: string, pubkey: string, role?: string) {
+    return invoke("add_member", { path, name, pubkey, role: role ?? null }) as Promise<import("./index").TeamView>;
   },
 
-  shareServer(teamPath: string, server: string, tier: number) {
-    return invoke("share_server", { teamPath, server, tier }) as Promise<Server[]>;
+  shareServer(teamPath: string, member: string, server: string, grants: Record<string, number>) {
+    return invoke("share_server", { teamPath, member, server, grants }) as Promise<Server[]>;
   },
 
-  unshareServer(teamPath: string, server: string) {
-    return invoke("unshare_server", { teamPath, server }) as Promise<Server[]>;
+  unshareServer(teamPath: string, member: string, server: string) {
+    return invoke("unshare_server", { teamPath, member, server }) as Promise<Server[]>;
   },
 
   myPubkeys() {
@@ -139,12 +139,12 @@ export const tauriData: DataSource = {
     return typeof r === "string" ? r : null;
   },
 
-  provisionPreview(teamPath: string, server: string, tier?: number) {
-    return invoke("provision_preview", { teamPath, server, tier: tier ?? null }) as Promise<import("./index").ProvisionPlan>;
+  provisionPreview(teamPath: string, server: string) {
+    return invoke("provision_preview", { teamPath, server }) as Promise<import("./index").ProvisionPlan>;
   },
 
-  provisionApply(teamPath: string, server: string, tier?: number) {
-    return invoke("provision_apply", { teamPath, server, tier: tier ?? null }) as Promise<import("./index").ProvisionResult>;
+  provisionApply(teamPath: string, server: string) {
+    return invoke("provision_apply", { teamPath, server }) as Promise<import("./index").ProvisionResult>;
   },
 
   teamGitStatus(path: string) {

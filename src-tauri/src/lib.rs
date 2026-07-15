@@ -197,49 +197,116 @@ async fn import_ssh_hosts(
 // 加载 team.yaml:团队共享机作为只读节点(source=team:<名>)合并进列表。
 // 共享的是拓扑,不是凭据 —— 队友用自己的凭据连(has_secret 是本机各自的标记)。
 
+// ── 团队目录布局（配置即代码）──────────────────────────
+//   <dir>/team.yaml            团队根：角色定义（管理员维护）
+//   <dir>/members/<name>.yaml  每人一份：我 + 我贡献的机器（只有本人改，git 无冲突）
+// 前端传的 team_path 始终指向 team.yaml；members 目录据此推导。
+
+fn members_dir(team_yaml: &str) -> PathBuf {
+    PathBuf::from(team_yaml)
+        .parent()
+        .map(|p| p.join("members"))
+        .unwrap_or_else(|| PathBuf::from("members"))
+}
+fn member_path(team_yaml: &str, name: &str) -> PathBuf {
+    members_dir(team_yaml).join(format!("{name}.yaml"))
+}
+
+fn read_root(team_yaml: &str) -> Result<team::TeamRoot, String> {
+    let text = std::fs::read_to_string(team_yaml).map_err(|_| format!("未找到或无法读取 {team_yaml}"))?;
+    team::parse_root(&text)
+}
+fn write_root(team_yaml: &str, root: &team::TeamRoot) -> Result<(), String> {
+    std::fs::write(team_yaml, team::root_to_yaml(root)?).map_err(|e| e.to_string())
+}
+fn read_member_file(path: &std::path::Path) -> Result<team::MemberFile, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    team::parse_member(&text)
+}
+fn write_member_file(team_yaml: &str, mf: &team::MemberFile) -> Result<(), String> {
+    let dir = members_dir(team_yaml);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let p = dir.join(format!("{}.yaml", mf.member.name));
+    std::fs::write(p, team::member_to_yaml(mf)?).map_err(|e| e.to_string())
+}
+
+// 加载全部成员文件。
+fn load_member_files(team_yaml: &str) -> Vec<team::MemberFile> {
+    let dir = members_dir(team_yaml);
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return vec![];
+    };
+    let mut out: Vec<team::MemberFile> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "yaml" || x == "yml"))
+        .filter_map(|e| read_member_file(&e.path()).ok())
+        .collect();
+    out.sort_by(|a, b| a.member.name.cmp(&b.member.name));
+    out
+}
+
+// 加载并合并成统一视图。若 team.yaml 还是旧平表，一次性迁移成新结构再加载。
+fn load_view(team_yaml: &str) -> Result<team::TeamView, String> {
+    let text = std::fs::read_to_string(team_yaml).map_err(|_| format!("未找到或无法读取 {team_yaml}"))?;
+
+    // 旧平表迁移：members/ 为空且旧格式能解析 → 落地新结构。
+    if load_member_files(team_yaml).is_empty() {
+        if let Some((root, files)) = team::migrate_flat(&text) {
+            // 只有当它确实是"旧平表"（有 machines/members 顶层且非新根）才迁移
+            if team::parse_root(&text).map(|r| r.roles.is_empty()).unwrap_or(true)
+                || !files.is_empty()
+            {
+                write_root(team_yaml, &root)?;
+                for mf in &files {
+                    write_member_file(team_yaml, mf)?;
+                }
+            }
+        }
+    }
+
+    let root = read_root(team_yaml)?;
+    Ok(team::merge(&root, &load_member_files(team_yaml)))
+}
+
 #[derive(Serialize)]
 struct LoadTeamResult {
     team: String,
     added: usize,
-    skipped: Vec<String>, // 名字与本地/其它来源冲突 → 让本地的赢,跳过
+    skipped: Vec<String>,
     servers: Vec<store::Server>,
 }
 
 #[tauri::command]
 fn load_team(path: String, state: State<AppState>) -> Result<LoadTeamResult, String> {
-    let text = std::fs::read_to_string(&path).map_err(|_| format!("未找到或无法读取 {path}"))?;
-    let cfg = team::parse(&text)?;
-    let src = format!("team:{}", cfg.team);
+    let view = load_view(&path)?;
+    let src = format!("team:{}", view.team);
 
     let _g = state.lock.lock().unwrap();
     let mut list = store::load(&state.dir);
 
-    // 记住本团队旧条目的 has_secret(用户已配自己的凭据,刷新式加载别抹掉)。
     let prev: std::collections::HashMap<String, bool> = list
         .iter()
         .filter(|s| s.source == src)
         .map(|s| (s.name.clone(), s.has_secret))
         .collect();
-    // 刷新:先移除本团队旧条目,再按最新 team.yaml 重建。
     list.retain(|s| s.source != src);
 
     let mut skipped = Vec::new();
     let mut added = 0usize;
-    for m in cfg.machines {
-        // 与本地(我加的)或其它来源同名 → 本地优先,跳过团队条目。
+    for m in &view.machines {
         if list.iter().any(|s| s.name == m.name) {
-            skipped.push(m.name);
+            skipped.push(m.name.clone());
             continue;
         }
         let has_secret = *prev.get(&m.name).unwrap_or(&false);
         list.push(store::Server {
-            name: m.name,
-            host: m.host,
+            name: m.name.clone(),
+            host: m.host.clone(),
             port: m.port,
-            jump: m.jump,
-            username: m.username,
-            auth: "password".into(), // 连接时用户在「设置凭据」里各自选 key/password
-            transport: m.transport,
+            jump: m.jump.clone(),
+            username: m.username.clone(),
+            auth: "password".into(),
+            transport: m.transport.clone(),
             source: src.clone(),
             shared_to: vec![],
             has_secret,
@@ -249,36 +316,39 @@ fn load_team(path: String, state: State<AppState>) -> Result<LoadTeamResult, Str
 
     store::save(&state.dir, &list)?;
     Ok(LoadTeamResult {
-        team: cfg.team,
+        team: view.team,
         added,
         skipped,
         servers: list,
     })
 }
 
-// team.yaml 读/写小助手（命令层只做 IO 编排，逻辑在 team.rs 纯函数里）。
-fn read_team(path: &str) -> Result<team::TeamConfig, String> {
-    let text = std::fs::read_to_string(path).map_err(|_| format!("未找到或无法读取 {path}"))?;
-    team::parse(&text)
-}
-fn write_team(path: &str, cfg: &team::TeamConfig) -> Result<(), String> {
-    std::fs::write(path, team::to_yaml(cfg)?).map_err(|e| e.to_string())
+// 读团队合并视图（给贡献 UI 展示成员/机器/角色，也是拓扑图的数据源）。
+#[tauri::command]
+fn read_team_view(path: String) -> Result<team::TeamView, String> {
+    load_view(&path)
 }
 
-// 读一份 team.yaml 的内容（给贡献 UI 展示当前成员/共享机）。
+// 新建团队：生成 team.yaml（角色定义）+ members/<我>.yaml（创建者自己）。
 #[tauri::command]
-fn read_team_file(path: String) -> Result<team::TeamConfig, String> {
-    read_team(&path)
-}
-
-// 新建团队：生成一份 team.yaml，创建者作为首个成员。
-#[tauri::command]
-fn create_team(path: String, team_name: String, member: String, pubkey: String) -> Result<(), String> {
+fn create_team(
+    path: String,
+    team_name: String,
+    member: String,
+    pubkey: String,
+    role: Option<String>,
+) -> Result<(), String> {
     if team_name.trim().is_empty() {
         return Err("团队名不能为空".into());
     }
-    let cfg = team::new_config(&team_name, team::TeamMember { name: member, pubkey });
-    write_team(&path, &cfg)
+    if member.trim().is_empty() {
+        return Err("用户名不能为空".into());
+    }
+    let root = team::new_root(&team_name);
+    write_root(&path, &root)?;
+    // 创建者默认 core（团队发起人）。
+    let mf = team::new_member_file(&member, &pubkey, role.as_deref().unwrap_or("core"));
+    write_member_file(&path, &mf)
 }
 
 // 探测本机作为节点：地址（内建 tailnet 优先）、sshd 是否在跑、能当算力还是跳板。
@@ -308,39 +378,48 @@ fn my_pubkeys(app: AppHandle) -> Result<Vec<String>, String> {
     Ok(keys)
 }
 
-// 邀成员：把 {name, pubkey} 写进 team.yaml（贡献侧据此把公钥同步进各机 authorized_keys）。
+// 邀成员 / 登记自己：写 members/<name>.yaml（本人或管理员为其建档）。返回更新后的视图。
 #[tauri::command]
-fn add_member(path: String, name: String, pubkey: String) -> Result<team::TeamConfig, String> {
-    let mut cfg = read_team(&path)?;
-    team::upsert_member(&mut cfg, team::TeamMember { name, pubkey });
-    write_team(&path, &cfg)?;
-    Ok(cfg)
+fn add_member(
+    path: String,
+    name: String,
+    pubkey: String,
+    role: Option<String>,
+) -> Result<team::TeamView, String> {
+    // 已有该成员文件则保留其机器，只更新身份字段。
+    let mut mf = read_member_file(&member_path(&path, &name))
+        .unwrap_or_else(|_| team::new_member_file(&name, &pubkey, role.as_deref().unwrap_or("member")));
+    mf.member.name = name.clone();
+    mf.member.pubkey = pubkey;
+    if let Some(r) = role {
+        mf.member.role = r;
+    }
+    write_member_file(&path, &mf)?;
+    load_view(&path)
 }
 
-// 一台本地机 → team.yaml 的条目。
-fn to_machine(s: &store::Server, tier: u8) -> team::TeamMachine {
-    team::TeamMachine {
+// 一台本地机 → member 文件里的机器条目（带 grants）。
+fn to_machine(s: &store::Server, grants: std::collections::BTreeMap<String, u8>) -> team::Machine {
+    team::Machine {
         name: s.name.clone(),
         host: s.host.clone(),
         port: s.port,
         jump: s.jump.clone(),
         username: s.username.clone(),
         transport: s.transport.clone(),
-        tier,
+        grants,
     }
 }
 
-// 贡献一台机：把本地机的拓扑写进 team.yaml + 给本地机打 shared_to 标记（凭据不出本机）。
-//
-// 跳板链必须完整：共享一台走跳板的机器时，**跳板本身也得在 team.yaml 里**，
-// 否则队友拿到的是一个指向不存在跳板的条目 —— 根本连不上。
-// 跳板按档 0（纯跳板：只借道、不给 shell）自动一并共享，除非它已被单独共享（那就不动它的档）。
+// 贡献一台机：写进「我的」member 文件 + 打本地 shared_to 标记（凭据不出本机）。
+// grants = 角色→档位（RBAC）。跳板链自动补全（跳板对所有角色开档 0：只借道不给 shell）。
 #[tauri::command]
 fn share_server(
     state: State<AppState>,
     team_path: String,
+    member: String,
     server: String,
-    tier: u8,
+    grants: std::collections::BTreeMap<String, u8>,
 ) -> Result<Vec<store::Server>, String> {
     let _g = state.lock.lock().unwrap();
     let list = store::load(&state.dir);
@@ -348,11 +427,14 @@ fn share_server(
     if srv.source != "mine" {
         return Err("只能贡献自己的机器（团队给的机器不可再贡献）".into());
     }
+    let view = load_view(&team_path)?;
+    let team_src = format!("team:{}", view.team);
 
-    let mut cfg = read_team(&team_path)?;
-    let team_src = format!("team:{}", cfg.team);
+    // 我的 member 文件（贡献写进这里 —— 各人各文件，git 无冲突）。
+    let mut mf = read_member_file(&member_path(&team_path, &member))
+        .map_err(|_| format!("找不到你的成员档 members/{member}.yaml —— 先加入团队"))?;
 
-    // 先补跳板（可能是链：A 经 B 经 C，逐级向上）。
+    // 跳板链补全（逐级向上）。
     let mut chain: Vec<store::Server> = Vec::new();
     let mut hop = srv.jump.clone();
     let mut guard = 0;
@@ -371,17 +453,18 @@ fn share_server(
         hop = j.jump.clone();
         chain.push(j.clone());
     }
+    // 跳板：对每个角色开档 0（列进配置但不给 shell），已存在则不改。
+    let jump_grants: std::collections::BTreeMap<String, u8> =
+        view.roles.keys().map(|r| (r.clone(), 0u8)).collect();
     for j in &chain {
-        // 已在 team.yaml 里就别改它的档位（可能被主人单独设过）。
-        if !cfg.machines.iter().any(|m| m.name == j.name) {
-            team::upsert_machine(&mut cfg, to_machine(j, 0)); // 档 0：只借道
+        if !mf.machines.iter().any(|m| m.name == j.name) {
+            team::upsert_machine(&mut mf, to_machine(j, jump_grants.clone()));
         }
     }
 
-    team::upsert_machine(&mut cfg, to_machine(srv, tier));
-    write_team(&team_path, &cfg)?;
+    team::upsert_machine(&mut mf, to_machine(srv, grants));
+    write_member_file(&team_path, &mf)?;
 
-    // 本地标记：目标机 + 跳板链上的每一台都算"已共享给这个团队"。
     let mut out = store::set_shared(&state.dir, &server, &team_src, true)?;
     for j in &chain {
         out = store::set_shared(&state.dir, &j.name, &team_src, true)?;
@@ -389,18 +472,19 @@ fn share_server(
     Ok(out)
 }
 
-// 撤销贡献：从 team.yaml 删该机 + 去掉本地 shared_to 标记。
-// 不允许撤掉仍被其他共享机当跳板的机器 —— 那会把队友的跳板链弄断（他们连不上了）。
+// 撤销贡献：从「我的」member 文件删该机 + 去本地标记。
+// 不允许撤掉仍被（任何成员的）共享机当跳板的机器 —— 会把队友的跳板链弄断。
 #[tauri::command]
 fn unshare_server(
     state: State<AppState>,
     team_path: String,
+    member: String,
     server: String,
 ) -> Result<Vec<store::Server>, String> {
     let _g = state.lock.lock().unwrap();
-    let mut cfg = read_team(&team_path)?;
+    let view = load_view(&team_path)?;
 
-    let dependents: Vec<&str> = cfg
+    let dependents: Vec<&str> = view
         .machines
         .iter()
         .filter(|m| m.name != server && m.jump.as_deref() == Some(server.as_str()))
@@ -413,16 +497,17 @@ fn unshare_server(
         ));
     }
 
-    team::remove_machine(&mut cfg, &server);
-    write_team(&team_path, &cfg)?;
-    store::set_shared(&state.dir, &server, &format!("team:{}", cfg.team), false)
+    let mut mf = read_member_file(&member_path(&team_path, &member))
+        .map_err(|_| format!("找不到你的成员档 members/{member}.yaml"))?;
+    team::remove_machine(&mut mf, &server);
+    write_member_file(&team_path, &mf)?;
+    store::set_shared(&state.dir, &server, &format!("team:{}", view.team), false)
 }
 
-// 把 team.yaml 的 tier 档位编译成 Tailscale ACL 计划（policy 片段 + 每台机的落地命令）。
-// 只产出计划供人 review —— 我们不替用户改他的 tailnet（责任为门：主人自己拍板、自己贴）。
+// 把 RBAC（角色×grant）编译成 Tailscale ACL 计划。只产出计划供人 review —— 责任为门。
 #[tauri::command]
 fn compile_acl(path: String) -> Result<acl::AclPlan, String> {
-    Ok(acl::compile(&read_team(&path)?))
+    Ok(acl::compile(&load_view(&path)?))
 }
 
 // ── team.yaml 的 git 同步（配置即代码：团队配置放 git，天然有历史与 review）──
@@ -459,24 +544,10 @@ async fn team_git_clone(url: String, dest: String) -> Result<String, String> {
 // 两步走：先 preview（纯生成，看得见要干什么），确认后 apply（经 SSH 以 root 执行）。
 // 我们**不静默改别人的机器** —— 责任为门：机器主人先看脚本，再点执行。
 
-// 生成下发脚本（不连接、不执行）。tier 缺省用 team.yaml 里该机的档位。
+// 生成下发脚本（不连接、不执行）。每个成员的档位按其角色 × 该机 grant 算出。
 #[tauri::command]
-fn provision_preview(
-    team_path: String,
-    server: String,
-    tier: Option<u8>,
-) -> Result<provision::ProvisionPlan, String> {
-    let cfg = read_team(&team_path)?;
-    let t = match tier {
-        Some(t) => t,
-        None => cfg
-            .machines
-            .iter()
-            .find(|m| m.name == server)
-            .map(|m| m.tier)
-            .ok_or_else(|| format!("team.yaml 里没有机器 {server}"))?,
-    };
-    provision::plan(&cfg, &server, t)
+fn provision_preview(team_path: String, server: String) -> Result<provision::ProvisionPlan, String> {
+    provision::plan(&load_view(&team_path)?, &server)
 }
 
 #[derive(Serialize)]
@@ -493,14 +564,14 @@ async fn provision_apply(
     state: State<'_, AppState>,
     team_path: String,
     server: String,
-    tier: Option<u8>,
 ) -> Result<ProvisionResult, String> {
-    let plan = provision_preview(team_path, server.clone(), tier)?;
-    if plan.tier == 0 {
-        return Ok(ProvisionResult { ok: true, code: 0, output: "档 0（纯跳板）无需下发。".into() });
-    }
+    let plan = provision_preview(team_path, server.clone())?;
     if plan.accounts.is_empty() {
-        return Err("没有可下发的成员公钥（team.yaml 里成员缺 pubkey）".into());
+        return Ok(ProvisionResult {
+            ok: true,
+            code: 0,
+            output: "没有需要下发的账号（无成员获此机 shell 授权，或成员缺公钥）。".into(),
+        });
     }
 
     let (target, secret, jump) = resolve_conn(&state, &server)?;
@@ -724,7 +795,7 @@ pub fn run() {
             read_ssh_config,
             import_ssh_hosts,
             load_team,
-            read_team_file,
+            read_team_view,
             create_team,
             add_member,
             my_pubkeys,

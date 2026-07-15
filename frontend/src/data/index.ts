@@ -63,11 +63,12 @@ export interface DataSource {
   compileAcl(path: string): Promise<AclPlan>;
 
   // ── 贡献侧：把自己的机器给团队（共享拓扑，凭据不出本机）──
-  readTeamFile(path: string): Promise<TeamConfig>;
-  createTeam(path: string, teamName: string, member: string, pubkey: string): Promise<void>;
-  addMember(path: string, name: string, pubkey: string): Promise<TeamConfig>;
-  shareServer(teamPath: string, server: string, tier: number): Promise<Server[]>;
-  unshareServer(teamPath: string, server: string): Promise<Server[]>;
+  readTeamView(path: string): Promise<TeamView>; // 合并视图（成员/机器/角色），也是拓扑图数据源
+  createTeam(path: string, teamName: string, member: string, pubkey: string, role?: string): Promise<void>;
+  addMember(path: string, name: string, pubkey: string, role?: string): Promise<TeamView>;
+  // grants = 角色→档位（RBAC）；member = 我是谁（写进我的 members/<我>.yaml）
+  shareServer(teamPath: string, member: string, server: string, grants: Record<string, number>): Promise<Server[]>;
+  unshareServer(teamPath: string, member: string, server: string): Promise<Server[]>;
   myPubkeys(): Promise<string[]>; // 本机 ~/.ssh/*.pub（登记自己时用）
   pickTeamSavePath(): Promise<string | null>; // 新建 team.yaml 的另存为
   // 探测本机作为节点（地址 / sshd / 能当算力还是跳板）。没有本地远程之分，只有节点。
@@ -78,9 +79,9 @@ export interface DataSource {
   tailnetUp(authkey: string, ingress: boolean): Promise<void>;
   tailnetDown(): Promise<void>;
 
-  // ── 授权下发：让队友真能登进去（先 preview 看脚本，再 apply 执行）──
-  provisionPreview(teamPath: string, server: string, tier?: number): Promise<ProvisionPlan>;
-  provisionApply(teamPath: string, server: string, tier?: number): Promise<ProvisionResult>;
+  // ── 授权下发：让队友真能登进去（先 preview 看脚本，再 apply 执行）。档位按角色自动算 ──
+  provisionPreview(teamPath: string, server: string): Promise<ProvisionPlan>;
+  provisionApply(teamPath: string, server: string): Promise<ProvisionResult>;
 
   // ── team.yaml 的 git 同步（配置即代码：团队配置放 git）──
   teamGitStatus(path: string): Promise<GitStatus>;
@@ -119,18 +120,30 @@ export interface SelfNode {
   notes: string[];
 }
 
-export interface TeamConfig {
+// 合并视图：team.yaml + members/*.yaml 合并出的统一结构（也是拓扑图数据源）。
+export interface TeamView {
   team: string;
-  members: { name: string; pubkey?: string }[];
-  machines: { name: string; host: string; port: number; jump?: string | null; username?: string; transport: string; tier: number }[];
+  roles: Record<string, { tier: number }>;
+  members: { name: string; pubkey: string; role: string }[];
+  machines: {
+    name: string; host: string; port: number; jump?: string | null;
+    username: string; transport: string;
+    grants: Record<string, number>; // 角色 → 档位（RBAC）
+    owner: string;                   // 贡献者
+  }[];
 }
 
 // 授权下发计划：要在被共享机上以 root 跑的脚本（先给人看，再执行）。
+export interface ProvisionAccount {
+  name: string;
+  role: string;
+  tier: number;
+  sudo: boolean;
+}
 export interface ProvisionPlan {
   server: string;
-  tier: number;
-  accounts: string[]; // 将建立的独立账号（身份到人）
-  sudo: boolean;      // 仅 tier 2
+  accounts: ProvisionAccount[]; // 每个可登入成员一条（含各自档位/是否 sudo）
+  any_sudo: boolean;
   script: string;
   warnings: string[];
 }
@@ -152,8 +165,7 @@ export interface LoadTeamResult {
 // tier 档位编译成的 Tailscale ACL 计划。只是「计划」——供人 review 后自己贴进 tailnet policy。
 export interface AclPlan {
   team: string;
-  group: string;
-  members: string[];
+  groups: [string, string[]][]; // group 名 → 成员名（各角色）
   tag_owners: string[];
   ssh: {
     action: string; // accept | check
@@ -161,14 +173,16 @@ export interface AclPlan {
     dst: string[];
     users: string[];
     check_period?: string;
+    role: string;
   }[];
   machines: {
     name: string;
     host: string;
-    tier: number;
     tag: string;
-    command: string;   // 这台机上要跑的 tailscale 命令
-    hardening: string; // 屋内层（OS/容器）责任 —— Tailscale 不管这层
+    owner: string;
+    command: string;     // 这台机上要跑的 tailscale 命令
+    grants_desc: string; // 如 "core→2, member→1"
+    hardening: string;
   }[];
   notes: string[];
 }

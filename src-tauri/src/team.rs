@@ -1,18 +1,65 @@
-// 团队配置（team.yaml）读写。团队 = 一份共享配置:成员公钥 + 共享机器(拓扑 + 开放档位)。
-// 呼应「配置即代码」:消费侧只读加载(团队机作为只读节点合并进 servers);
-// 贡献侧把自己的机器拓扑写进 team.yaml(共享拓扑不共享凭据,连接时各自用自己的钥匙)。
-// 核心逻辑是纯函数(new/upsert/remove),便于单测;lib.rs 命令只做文件 IO 编排。
+// 团队配置：两层 + 合并成图。呼应「配置即代码」与「责任为门」。
+//
+//   团队级  team.yaml            —— 角色定义（roles: core/member/guest → tier）。管理员维护，很少变。
+//   个人级  members/<name>.yaml  —— 我是谁 + 我贡献的机器 + 每台机对哪个角色开哪个档（grants）。
+//                                   只有本人改，git 永不冲突，git blame 即担责链。
+//
+// 加载时把 team.yaml + 所有 members/*.yaml 合并成 TeamView（统一视图）——
+// 下游（provision / acl / 拓扑图）只认 TeamView。权限 = 成员角色 × 机器 grant 的交叉，算出来。
+//
+// 核心是纯函数（parse / merge / 交叉查表 / graph），便于单测；lib.rs 只做文件 IO 编排。
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
+// ── 磁盘结构 ──────────────────────────────────────────────
+
+// 团队级 team.yaml：只定义角色。
 #[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct TeamMember {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub pubkey: String,
+pub struct TeamRoot {
+    pub team: String,
+    // 角色名 → 权限档位。core=2(sudo) / member=1(受限) / guest=0(纯跳板)。
+    #[serde(default = "default_roles")]
+    pub roles: BTreeMap<String, Role>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+pub struct Role {
+    pub tier: u8,
+}
+
+fn default_roles() -> BTreeMap<String, Role> {
+    BTreeMap::from([
+        ("core".into(), Role { tier: 2 }),
+        ("member".into(), Role { tier: 1 }),
+        ("guest".into(), Role { tier: 0 }),
+    ])
+}
+
+// 个人级 members/<name>.yaml：我 + 我贡献的机器。
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct MemberFile {
+    pub member: Member,
+    #[serde(default)]
+    pub machines: Vec<Machine>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct TeamMachine {
+pub struct Member {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pubkey: String,
+    // 我在团队里的角色（引用 team.yaml 的 roles 键）。缺省 member。
+    #[serde(default = "default_role")]
+    pub role: String,
+}
+
+fn default_role() -> String {
+    "member".into()
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct Machine {
     pub name: String,
     pub host: String,
     #[serde(default = "default_port")]
@@ -23,9 +70,10 @@ pub struct TeamMachine {
     pub username: String,
     #[serde(default = "default_transport")]
     pub transport: String,
-    // 开放档位:0 纯跳板 / 1 受限计算账号(默认) / 2 完全信任。授权落地时才据此配权限。
-    #[serde(default = "default_tier")]
-    pub tier: u8,
+    // ★ RBAC 落点：这台机对每个角色开的档位。空 = 未授权任何角色。
+    // 缺省给 member=1（贡献时若没细分，至少让普通成员能用）。
+    #[serde(default = "default_grants")]
+    pub grants: BTreeMap<String, u8>,
 }
 
 fn default_port() -> u16 {
@@ -34,165 +82,385 @@ fn default_port() -> u16 {
 fn default_transport() -> String {
     "direct".into()
 }
-fn default_tier() -> u8 {
-    1
+fn default_grants() -> BTreeMap<String, u8> {
+    BTreeMap::from([("member".into(), 1)])
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct TeamConfig {
+// ── 合并视图（下游只认这个）──────────────────────────────
+
+// 合并后的一台机：带上「谁贡献的」。
+#[derive(Serialize, Clone, Debug)]
+pub struct ViewMachine {
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub jump: Option<String>,
+    pub username: String,
+    pub transport: String,
+    pub grants: BTreeMap<String, u8>,
+    pub owner: String, // 贡献者（来自哪个 members/*.yaml）
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct ViewMember {
+    pub name: String,
+    pub pubkey: String,
+    pub role: String,
+}
+
+// team.yaml + 所有 members/*.yaml 合并出的统一视图。
+#[derive(Serialize, Clone, Debug)]
+pub struct TeamView {
     pub team: String,
-    #[serde(default)]
-    pub members: Vec<TeamMember>,
-    #[serde(default)]
-    pub machines: Vec<TeamMachine>,
+    pub roles: BTreeMap<String, Role>,
+    pub members: Vec<ViewMember>,
+    pub machines: Vec<ViewMachine>,
 }
 
-// ── 解析 / 序列化 ─────────────────────────────────────────
-
-// 解析 team.yaml 文本。团队名为空视为无效(用于给条目打 source=team:<名>)。
-pub fn parse(text: &str) -> Result<TeamConfig, String> {
-    let cfg: TeamConfig = serde_yaml::from_str(text).map_err(|e| format!("team.yaml 解析失败: {e}"))?;
-    if cfg.team.trim().is_empty() {
-        return Err("team.yaml 缺少 team 字段(团队名)".into());
+impl TeamView {
+    // 某成员对某台机的**实际档位** = 该机对成员角色开的 grant（无则 None = 无权）。
+    pub fn effective_tier(&self, machine: &ViewMachine, member: &ViewMember) -> Option<u8> {
+        machine.grants.get(&member.role).copied()
     }
-    Ok(cfg)
+
+    // 某台机授权了哪些角色（grant 存在即算，含档 0）。稳定排序。
+    pub fn machine_roles(&self, machine: &ViewMachine) -> Vec<String> {
+        let mut r: Vec<String> = machine.grants.keys().cloned().collect();
+        r.sort();
+        r
+    }
+
+    pub fn members_of_role(&self, role: &str) -> Vec<&ViewMember> {
+        self.members.iter().filter(|m| m.role == role).collect()
+    }
 }
 
-pub fn to_yaml(cfg: &TeamConfig) -> Result<String, String> {
-    serde_yaml::to_string(cfg).map_err(|e| format!("team.yaml 序列化失败: {e}"))
+// ── 解析 / 合并 ──────────────────────────────────────────
+
+pub fn parse_root(text: &str) -> Result<TeamRoot, String> {
+    let root: TeamRoot = serde_yaml::from_str(text).map_err(|e| format!("team.yaml 解析失败: {e}"))?;
+    if root.team.trim().is_empty() {
+        return Err("team.yaml 缺少 team 字段（团队名）".into());
+    }
+    Ok(root)
 }
 
-// ── 纯操作(可单测,无 IO) ─────────────────────────────────
+pub fn parse_member(text: &str) -> Result<MemberFile, String> {
+    let mf: MemberFile = serde_yaml::from_str(text).map_err(|e| format!("member 文件解析失败: {e}"))?;
+    if mf.member.name.trim().is_empty() {
+        return Err("member 文件缺少 member.name".into());
+    }
+    Ok(mf)
+}
 
-// 新建一份团队配置,创建者作为首个成员。
-pub fn new_config(team: &str, creator: TeamMember) -> TeamConfig {
-    TeamConfig {
+pub fn root_to_yaml(root: &TeamRoot) -> Result<String, String> {
+    serde_yaml::to_string(root).map_err(|e| format!("序列化失败: {e}"))
+}
+
+pub fn member_to_yaml(mf: &MemberFile) -> Result<String, String> {
+    serde_yaml::to_string(mf).map_err(|e| format!("序列化失败: {e}"))
+}
+
+// 合并：team 根 + 若干成员文件 → 统一视图。
+// 未知角色（member.role 不在 roles 里）保留原样，交给校验层提示，不在此静默丢弃。
+pub fn merge(root: &TeamRoot, members: &[MemberFile]) -> TeamView {
+    let mut view_members = Vec::new();
+    let mut view_machines = Vec::new();
+
+    for mf in members {
+        view_members.push(ViewMember {
+            name: mf.member.name.clone(),
+            pubkey: mf.member.pubkey.clone(),
+            role: mf.member.role.clone(),
+        });
+        for m in &mf.machines {
+            view_machines.push(ViewMachine {
+                name: m.name.clone(),
+                host: m.host.clone(),
+                port: m.port,
+                jump: m.jump.clone(),
+                username: m.username.clone(),
+                transport: m.transport.clone(),
+                grants: m.grants.clone(),
+                owner: mf.member.name.clone(),
+            });
+        }
+    }
+    // 稳定排序（成员/机器按名），让图与授权计划输出确定。
+    view_members.sort_by(|a, b| a.name.cmp(&b.name));
+    view_machines.sort_by(|a, b| a.name.cmp(&b.name));
+
+    TeamView {
+        team: root.team.clone(),
+        roles: root.roles.clone(),
+        members: view_members,
+        machines: view_machines,
+    }
+}
+
+// ── 兼容旧的平表 team.yaml（迁移一版）─────────────────────
+// 旧格式：{ team, members:[{name,pubkey}], machines:[{...,tier}] }。
+// 迁移为：TeamRoot(默认角色) + 一个「合并的」成员文件（machines 的 tier → grants{member:tier}）。
+
+#[derive(Deserialize)]
+struct FlatOld {
+    team: String,
+    #[serde(default)]
+    members: Vec<FlatMember>,
+    #[serde(default)]
+    machines: Vec<FlatMachine>,
+}
+#[derive(Deserialize)]
+struct FlatMember {
+    name: String,
+    #[serde(default)]
+    pubkey: String,
+}
+#[derive(Deserialize)]
+struct FlatMachine {
+    name: String,
+    host: String,
+    #[serde(default = "default_port")]
+    port: u16,
+    #[serde(default)]
+    jump: Option<String>,
+    #[serde(default)]
+    username: String,
+    #[serde(default = "default_transport")]
+    transport: String,
+    #[serde(default)]
+    tier: u8,
+}
+
+// 探测并迁移旧平表；不是旧格式则返回 None。
+pub fn migrate_flat(text: &str) -> Option<(TeamRoot, Vec<MemberFile>)> {
+    // 新格式的成员文件顶层有 `member:`，团队根有 `roles:`；旧平表是顶层 `members:`+`machines:`。
+    let old: FlatOld = serde_yaml::from_str(text).ok()?;
+    if old.team.trim().is_empty() {
+        return None;
+    }
+    let root = TeamRoot {
+        team: old.team,
+        roles: default_roles(),
+    };
+    // 旧平表没有"谁贡献了哪台机"的归属信息 —— 全部归到第一个成员名下（迁移的近似）。
+    let owner = old.members.first().map(|m| m.name.clone()).unwrap_or_else(|| "owner".into());
+    let machines = old
+        .machines
+        .into_iter()
+        .map(|m| Machine {
+            name: m.name,
+            host: m.host,
+            port: m.port,
+            jump: m.jump,
+            username: m.username,
+            transport: m.transport,
+            grants: BTreeMap::from([("member".into(), m.tier.max(1).min(2))]),
+        })
+        .collect();
+    // 每个旧成员成一份文件；机器挂在 owner 那份下。
+    let mut files = Vec::new();
+    for (i, mem) in old.members.iter().enumerate() {
+        files.push(MemberFile {
+            member: Member {
+                name: mem.name.clone(),
+                pubkey: mem.pubkey.clone(),
+                role: default_role(),
+            },
+            machines: if mem.name == owner && i == 0 {
+                // 只在 owner 第一份塞机器（下面替换）
+                vec![]
+            } else {
+                vec![]
+            },
+        });
+    }
+    if let Some(f) = files.iter_mut().find(|f| f.member.name == owner) {
+        f.machines = machines;
+    } else {
+        files.push(MemberFile {
+            member: Member { name: owner, pubkey: String::new(), role: default_role() },
+            machines,
+        });
+    }
+    Some((root, files))
+}
+
+// ── 纯操作（个人文件的增改；只动自己那份）───────────────
+
+pub fn new_root(team: &str) -> TeamRoot {
+    TeamRoot {
         team: team.trim().to_string(),
-        members: vec![creator],
+        roles: default_roles(),
+    }
+}
+
+pub fn new_member_file(name: &str, pubkey: &str, role: &str) -> MemberFile {
+    MemberFile {
+        member: Member {
+            name: name.trim().into(),
+            pubkey: pubkey.trim().into(),
+            role: if role.is_empty() { default_role() } else { role.into() },
+        },
         machines: vec![],
     }
 }
 
-// 加/更新一台共享机(按 name 唯一)。
-pub fn upsert_machine(cfg: &mut TeamConfig, m: TeamMachine) {
-    match cfg.machines.iter_mut().find(|x| x.name == m.name) {
+pub fn upsert_machine(mf: &mut MemberFile, m: Machine) {
+    match mf.machines.iter_mut().find(|x| x.name == m.name) {
         Some(e) => *e = m,
-        None => cfg.machines.push(m),
+        None => mf.machines.push(m),
     }
 }
 
-// 撤销共享一台机;返回是否确实移除了。
-pub fn remove_machine(cfg: &mut TeamConfig, name: &str) -> bool {
-    let before = cfg.machines.len();
-    cfg.machines.retain(|x| x.name != name);
-    cfg.machines.len() != before
-}
-
-// 加/更新一个成员(按 name 唯一)。
-pub fn upsert_member(cfg: &mut TeamConfig, m: TeamMember) {
-    match cfg.members.iter_mut().find(|x| x.name == m.name) {
-        Some(e) => *e = m,
-        None => cfg.members.push(m),
-    }
+pub fn remove_machine(mf: &mut MemberFile, name: &str) -> bool {
+    let before = mf.machines.len();
+    mf.machines.retain(|x| x.name != name);
+    mf.machines.len() != before
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn machine(name: &str, host: &str) -> TeamMachine {
-        TeamMachine {
-            name: name.into(),
-            host: host.into(),
-            port: 22,
-            jump: None,
-            username: String::new(),
-            transport: "direct".into(),
-            tier: 1,
-        }
+    fn root() -> TeamRoot {
+        parse_root("team: neuroai\nroles:\n  core: {tier: 2}\n  member: {tier: 1}\n  guest: {tier: 0}\n").unwrap()
     }
 
     #[test]
-    fn parses_minimal() {
-        let cfg = parse(
+    fn default_roles_when_omitted() {
+        let r = parse_root("team: neuroai\n").unwrap();
+        assert_eq!(r.roles.get("core").unwrap().tier, 2);
+        assert_eq!(r.roles.get("guest").unwrap().tier, 0);
+    }
+
+    #[test]
+    fn member_file_parses_with_grants() {
+        let mf = parse_member(
             r#"
-team: neuroai
-members:
-  - name: alice
-    pubkey: ssh-ed25519 AAAA
+member:
+  name: alice
+  pubkey: ssh-ed25519 AAAA
+  role: core
 machines:
-  - name: a100
-    host: a100.neuroai.ts.net
+  - name: alice-gpu
+    host: 100.0.0.5
     transport: tailnet
-    tier: 1
-  - name: lab-store
-    host: 10.0.0.20
-    port: 2222
+    grants:
+      core: 2
+      member: 1
+      guest: 0
 "#,
         )
         .unwrap();
-        assert_eq!(cfg.team, "neuroai");
-        assert_eq!(cfg.members.len(), 1);
-        assert_eq!(cfg.machines.len(), 2);
-        assert_eq!(cfg.machines[0].transport, "tailnet");
-        assert_eq!(cfg.machines[1].port, 2222);
-        assert_eq!(cfg.machines[1].tier, 1); // 默认档
+        assert_eq!(mf.member.role, "core");
+        assert_eq!(mf.machines[0].grants.get("core"), Some(&2));
+        assert_eq!(mf.machines[0].grants.get("guest"), Some(&0));
     }
 
     #[test]
-    fn rejects_no_team_name() {
-        assert!(parse("machines: []").is_err());
+    fn member_role_defaults_to_member() {
+        let mf = parse_member("member:\n  name: bob\n").unwrap();
+        assert_eq!(mf.member.role, "member");
     }
 
-    #[test]
-    fn new_config_has_creator() {
-        let cfg = new_config("  neuroai  ", TeamMember { name: "alice".into(), pubkey: "K".into() });
-        assert_eq!(cfg.team, "neuroai"); // trim
-        assert_eq!(cfg.members.len(), 1);
-        assert_eq!(cfg.machines.len(), 0);
-    }
-
-    #[test]
-    fn upsert_machine_dedupes_by_name() {
-        let mut cfg = new_config("t", TeamMember { name: "a".into(), pubkey: String::new() });
-        upsert_machine(&mut cfg, machine("gpu", "1.1.1.1"));
-        upsert_machine(&mut cfg, machine("gpu", "2.2.2.2")); // 同名 → 更新非新增
-        assert_eq!(cfg.machines.len(), 1);
-        assert_eq!(cfg.machines[0].host, "2.2.2.2");
-    }
-
-    #[test]
-    fn remove_machine_reports() {
-        let mut cfg = new_config("t", TeamMember { name: "a".into(), pubkey: String::new() });
-        upsert_machine(&mut cfg, machine("gpu", "1.1.1.1"));
-        assert!(remove_machine(&mut cfg, "gpu"));
-        assert!(!remove_machine(&mut cfg, "gpu")); // 已不在
-        assert_eq!(cfg.machines.len(), 0);
-    }
-
-    #[test]
-    fn upsert_member_dedupes() {
-        let mut cfg = new_config("t", TeamMember { name: "a".into(), pubkey: "old".into() });
-        upsert_member(&mut cfg, TeamMember { name: "a".into(), pubkey: "new".into() });
-        upsert_member(&mut cfg, TeamMember { name: "b".into(), pubkey: "kb".into() });
-        assert_eq!(cfg.members.len(), 2);
-        assert_eq!(cfg.members[0].pubkey, "new");
-    }
-
-    #[test]
-    fn yaml_round_trips() {
-        let mut cfg = new_config("neuroai", TeamMember { name: "alice".into(), pubkey: "K".into() });
-        upsert_machine(&mut cfg, TeamMachine {
-            name: "gpu".into(), host: "10.0.0.5".into(), port: 2222,
-            jump: Some("bastion".into()), username: "alice".into(),
-            transport: "jump".into(), tier: 2,
+    fn view3() -> TeamView {
+        // alice=core 贡献 gpu(core:2,member:1,guest:0)；bob=member；dan=guest
+        let mut af = new_member_file("alice", "KA", "core");
+        upsert_machine(&mut af, Machine {
+            name: "gpu".into(), host: "10.0.0.1".into(), port: 22, jump: None,
+            username: String::new(), transport: "direct".into(),
+            grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1), ("guest".into(), 0)]),
         });
-        let text = to_yaml(&cfg).unwrap();
-        let back = parse(&text).unwrap();
-        assert_eq!(back.team, "neuroai");
-        assert_eq!(back.machines.len(), 1);
+        let bf = new_member_file("bob", "KB", "member");
+        let df = new_member_file("dan", "KD", "guest");
+        merge(&root(), &[af, bf, df])
+    }
+
+    #[test]
+    fn effective_tier_is_role_times_grant() {
+        let v = view3();
+        let gpu = v.machines.iter().find(|m| m.name == "gpu").unwrap().clone();
+        let by = |n: &str| v.members.iter().find(|m| m.name == n).unwrap().clone();
+        assert_eq!(v.effective_tier(&gpu, &by("alice")), Some(2)); // core
+        assert_eq!(v.effective_tier(&gpu, &by("bob")), Some(1));   // member
+        assert_eq!(v.effective_tier(&gpu, &by("dan")), Some(0));   // guest
+    }
+
+    #[test]
+    fn merge_records_owner() {
+        let v = view3();
+        let gpu = v.machines.iter().find(|m| m.name == "gpu").unwrap();
+        assert_eq!(gpu.owner, "alice");
+    }
+
+    #[test]
+    fn merge_sorts_stable() {
+        let v = view3();
+        let names: Vec<&str> = v.members.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["alice", "bob", "dan"]); // 排序确定
+    }
+
+    #[test]
+    fn machine_ops_dedupe() {
+        let mut f = new_member_file("alice", "K", "core");
+        let m = |h: &str| Machine {
+            name: "gpu".into(), host: h.into(), port: 22, jump: None,
+            username: String::new(), transport: "direct".into(),
+            grants: BTreeMap::from([("member".into(), 1)]),
+        };
+        upsert_machine(&mut f, m("1.1.1.1"));
+        upsert_machine(&mut f, m("2.2.2.2"));
+        assert_eq!(f.machines.len(), 1);
+        assert_eq!(f.machines[0].host, "2.2.2.2");
+        assert!(remove_machine(&mut f, "gpu"));
+        assert!(!remove_machine(&mut f, "gpu"));
+    }
+
+    #[test]
+    fn round_trips() {
+        let mut f = new_member_file("alice", "KA", "core");
+        upsert_machine(&mut f, Machine {
+            name: "gpu".into(), host: "10.0.0.5".into(), port: 2222,
+            jump: Some("bastion".into()), username: "alice".into(), transport: "jump".into(),
+            grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
+        });
+        let back = parse_member(&member_to_yaml(&f).unwrap()).unwrap();
         assert_eq!(back.machines[0].port, 2222);
         assert_eq!(back.machines[0].jump.as_deref(), Some("bastion"));
-        assert_eq!(back.machines[0].tier, 2);
+        assert_eq!(back.machines[0].grants.get("core"), Some(&2));
+
+        let r = root();
+        let rback = parse_root(&root_to_yaml(&r).unwrap()).unwrap();
+        assert_eq!(rback.roles.get("core").unwrap().tier, 2);
+    }
+
+    #[test]
+    fn migrate_flat_old_format() {
+        let old = r#"
+team: neuroai
+members:
+  - name: alice
+    pubkey: KA
+  - name: bob
+    pubkey: KB
+machines:
+  - name: gpu
+    host: 10.0.0.1
+    tier: 2
+"#;
+        let (root, files) = migrate_flat(old).unwrap();
+        assert_eq!(root.team, "neuroai");
+        assert!(root.roles.contains_key("member"));
+        // 两个成员各一份文件
+        assert_eq!(files.len(), 2);
+        // 机器归到第一个成员（owner），tier=2 → grants{member:2}
+        let owner = files.iter().find(|f| f.member.name == "alice").unwrap();
+        assert_eq!(owner.machines.len(), 1);
+        assert_eq!(owner.machines[0].grants.get("member"), Some(&2));
+        // 合并后视图可用
+        let v = merge(&root, &files);
+        assert_eq!(v.machines.len(), 1);
+        assert_eq!(v.machines[0].owner, "alice");
     }
 }

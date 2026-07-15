@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Me, Server } from "../api";
 import { data, supportsLocalTopology, type ServerInput, type SshHost } from "../data";
@@ -60,8 +60,18 @@ export function Servers({
   const [imp, setImp] = useState<{ path: string; hosts: SshHost[] } | null>(null);
   const [impErr, setImpErr] = useState("");
   // 正在下发授权的机器（打开 ProvisionModal）
-  const [prov, setProv] = useState<{ server: string; tier: number } | null>(null);
+  const [prov, setProv] = useState<{ server: string } | null>(null);
   const [addSelf, setAddSelf] = useState(false); // 把本机登记成节点
+
+  // 团队角色（贡献时按角色开档）+ 我的成员名（写进我的 members/<我>.yaml）。
+  const [roles, setRoles] = useState<string[]>(["core", "member", "guest"]);
+  const myName = me?.user || "";
+  useEffect(() => {
+    if (!teamPath) return;
+    data.readTeamView(teamPath)
+      .then((v) => setRoles(Object.keys(v.roles)))
+      .catch(() => {});
+  }, [teamPath]);
 
   const loadConfig = async (path?: string) => {
     setImpErr("");
@@ -97,13 +107,15 @@ export function Servers({
                 local={local}
                 readonly={g.team}
                 teamPath={teamPath}
+                roles={roles}
+                myName={myName}
                 goSettings={goSettings}
                 goTerminal={goTerminal}
                 goTeam={goTeam}
                 reload={reload}
                 onEdit={() => setEditing(s)}
                 onDelete={async () => { await data.delServer(s.name); await reload(); }}
-                onProvision={(tier) => setProv({ server: s.name, tier })}
+                onProvision={() => setProv({ server: s.name })}
               />
             ))}
           </div>
@@ -157,7 +169,6 @@ export function Servers({
         <ProvisionModal
           teamPath={teamPath}
           server={prov.server}
-          tier={prov.tier}
           onClose={() => setProv(null)}
         />
       )}
@@ -173,11 +184,15 @@ export function Servers({
   );
 }
 
+const TIER_SHORT = ["借道", "受限", "信任"]; // 档 0/1/2 简称
+
 function LaunchCard({
   s,
   local,
   readonly,
   teamPath,
+  roles,
+  myName,
   goSettings,
   goTerminal,
   goTeam,
@@ -190,28 +205,41 @@ function LaunchCard({
   local: boolean;
   readonly: boolean; // 团队来源：拓扑只读（仍可设自己的凭据、SSH）
   teamPath: string;
+  roles: string[];
+  myName: string;
   goSettings: () => void;
   goTerminal: (name: string) => void;
   goTeam: () => void;
   reload: () => Promise<void> | void;
   onEdit: () => void;
   onDelete: () => void;
-  onProvision: (tier: number) => void;
+  onProvision: () => void;
 }) {
   const ready = !!(s.has_secret && s.username);
   const [confirming, setConfirming] = useState(false);
-  const [sharing, setSharing] = useState(false); // 展开档位选择面板
-  const [tier, setTier] = useState(1);           // 默认档 1（受限计算）
+  const [sharing, setSharing] = useState(false); // 展开角色授权面板
+  // grants：每个角色开的档位。默认 core=2 / member=1 / guest=0（缺省 1）。
+  const defaultTier = (r: string) => (r === "core" ? 2 : r === "guest" ? 0 : 1);
+  const [grants, setGrants] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState(false);
   const [shareErr, setShareErr] = useState("");
 
   const shared = (s.shared_to?.length ?? 0) > 0;
   const sharedTeam = s.shared_to?.[0]?.replace(/^team:/, "") ?? "";
 
+  const openShare = () => {
+    // 初始化 grants（按角色默认）
+    const g: Record<string, number> = {};
+    for (const r of roles) g[r] = defaultTier(r);
+    setGrants(g);
+    setSharing(true);
+    setShareErr("");
+  };
+
   const doShare = async () => {
     setBusy(true); setShareErr("");
     try {
-      await data.shareServer(teamPath, s.name, tier);
+      await data.shareServer(teamPath, myName, s.name, grants);
       await reload();
       setSharing(false);
     } catch (e) {
@@ -222,7 +250,7 @@ function LaunchCard({
   const doUnshare = async () => {
     setBusy(true); setShareErr("");
     try {
-      await data.unshareServer(teamPath, s.name);
+      await data.unshareServer(teamPath, myName, s.name);
       await reload();
     } catch (e) {
       setShareErr(e instanceof Error ? e.message : String(e));
@@ -267,7 +295,7 @@ function LaunchCard({
                 <button
                   className="btn subtle sm"
                   title={shared ? "共享设置" : "共享给团队"}
-                  onClick={() => (teamPath ? setSharing((v) => !v) : goTeam())}
+                  onClick={() => (teamPath ? (sharing ? setSharing(false) : openShare()) : goTeam())}
                 >
                   <Icon name="users" />
                 </button>
@@ -290,9 +318,10 @@ function LaunchCard({
                 但要让他们<strong>真能登进去</strong>，还需下发授权（在这台机上为每位成员建独立账号 + 装其公钥）。
               </div>
               <div className="share-row">
-                <button className="btn primary sm" disabled={busy} onClick={() => onProvision(tier)}>
+                <button className="btn primary sm" disabled={busy} onClick={onProvision}>
                   <Icon name="key" />下发授权
                 </button>
+                <button className="btn subtle sm" disabled={busy} onClick={openShare}>改授权</button>
                 <button className="btn subtle sm" disabled={busy} onClick={doUnshare}>撤销共享</button>
                 <button className="btn subtle sm" onClick={() => setSharing(false)}>收起</button>
               </div>
@@ -301,22 +330,28 @@ function LaunchCard({
             <>
               <div className="share-t">
                 共享的是<strong>拓扑</strong>（怎么到达这台机），<strong>不是凭据</strong> —— 你的密码/私钥永不出本机。
-                选一个开放档位：
+                给每个<strong>角色</strong>选开放档位（RBAC：不同角色不同权限）：
               </div>
-              <div className="tier-pick">
-                {TIERS.map((t) => (
-                  <button
-                    key={t.v}
-                    className={"tier-opt" + (tier === t.v ? " on" : "")}
-                    onClick={() => setTier(t.v)}
-                  >
-                    <span className="tier-l">{t.label}</span>
-                    <span className="tier-h">{t.hint}</span>
-                  </button>
+              <div className="grant-rows">
+                {roles.map((r) => (
+                  <div key={r} className="grant-row">
+                    <span className="grant-role">{r}</span>
+                    <div className="seg sm">
+                      {[0, 1, 2].map((t) => (
+                        <button
+                          key={t}
+                          className={(grants[r] ?? defaultTier(r)) === t ? "on" : ""}
+                          onClick={() => setGrants((g) => ({ ...g, [r]: t }))}
+                        >
+                          {t}·{TIER_SHORT[t]}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
               <div className="share-row">
-                <button className="btn primary sm" disabled={busy} onClick={doShare}>
+                <button className="btn primary sm" disabled={busy || !myName} onClick={doShare}>
                   <Icon name="users" />{busy ? "共享中…" : "共享给团队"}
                 </button>
                 <button className="btn subtle sm" onClick={() => setSharing(false)}>取消</button>
