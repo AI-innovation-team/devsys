@@ -131,7 +131,7 @@ export interface SelfNode {
 // 合并视图：team.yaml + members/*.yaml 合并出的统一结构（也是拓扑图数据源）。
 export interface TeamView {
   team: string;
-  roles: Record<string, { tier: number }>;
+  roles: string[]; // 纯角色名（无 tier）—— tier 只在 machine.grants
   members: { name: string; identity: string; pubkey: string; role: string }[];
   machines: {
     name: string; host: string; port: number; jump?: string | null;

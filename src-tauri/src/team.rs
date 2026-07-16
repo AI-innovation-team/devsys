@@ -1,6 +1,6 @@
 // 团队配置：两层 + 合并成图。呼应「配置即代码」与「责任为门」。
 //
-//   团队级  team.yaml            —— 角色定义（roles: core/member/guest → tier）。管理员维护，很少变。
+//   团队级  team.yaml            —— 角色名（core/member/pub）+ 可选 GitHub org 绑定。管理员维护。
 //   个人级  members/<name>.yaml  —— 我是谁 + 我贡献的机器 + 每台机对哪个角色开哪个档（grants）。
 //                                   只有本人改，git 永不冲突，git blame 即担责链。
 //
@@ -14,29 +14,27 @@ use serde::{Deserialize, Serialize};
 
 // ── 磁盘结构 ──────────────────────────────────────────────
 
-// 团队级 team.yaml：定义角色 + 可选的 GitHub org 绑定（花名册自动导出）。
+// 团队级 team.yaml。对齐指南针后：
+//   · 角色只是**名字**（人的分组），不带 tier —— tier 只属于「设备×角色」（machine.grants）。
+//   · 成员从身份源**导出**（GitHub org），不手维护名单。
+//   · 三层信任：org=私有 / federation=联邦（别人的 org）/ pub=公开公地。
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct TeamRoot {
     pub team: String,
-    // 角色名 → 权限档位。core=2(sudo) / member=1(受限) / guest=0(纯跳板)。
+    // 角色名（纯标签，无 tier）。core=org 核心 / member=org 成员 / pub=org 外公开。
     #[serde(default = "default_roles")]
-    pub roles: BTreeMap<String, Role>,
-    // 绑定 GitHub org：成员/公钥/角色从 org 自动导出，不用每人手动登记。
+    pub roles: Vec<String>,
+    // 绑定 GitHub org：成员/公钥/角色从 org 自动导出（github.role_map = GitHub team→角色）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github: Option<crate::github::GithubBinding>,
+    // 联邦：我信任的别的 org，其成员算「联邦成员」而非 pub。v2 实现，先占位。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub federation: Vec<String>,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
-pub struct Role {
-    pub tier: u8,
-}
-
-fn default_roles() -> BTreeMap<String, Role> {
-    BTreeMap::from([
-        ("core".into(), Role { tier: 2 }),
-        ("member".into(), Role { tier: 1 }),
-        ("guest".into(), Role { tier: 0 }),
-    ])
+// core=org 核心（从 GitHub core-team 导出）/ member=org 成员 / pub=org 外公开借用。
+fn default_roles() -> Vec<String> {
+    vec!["core".into(), "member".into(), "pub".into()]
 }
 
 // 个人级 members/<name>.yaml：我 + 我贡献的机器。
@@ -136,7 +134,7 @@ pub struct ViewMember {
 #[derive(Serialize, Clone, Debug)]
 pub struct TeamView {
     pub team: String,
-    pub roles: BTreeMap<String, Role>,
+    pub roles: Vec<String>, // 纯角色名（无 tier）
     pub members: Vec<ViewMember>,
     pub machines: Vec<ViewMachine>,
 }
@@ -296,6 +294,7 @@ pub fn migrate_flat(text: &str) -> Option<(TeamRoot, Vec<MemberFile>)> {
         team: old.team,
         roles: default_roles(),
         github: None,
+        federation: vec![],
     };
     // 旧平表没有"谁贡献了哪台机"的归属信息 —— 全部归到第一个成员名下（迁移的近似）。
     let owner = old.members.first().map(|m| m.name.clone()).unwrap_or_else(|| "owner".into());
@@ -344,6 +343,7 @@ pub fn new_root(team: &str) -> TeamRoot {
         team: team.trim().to_string(),
         roles: default_roles(),
         github: None,
+        federation: vec![],
     }
 }
 
@@ -377,7 +377,13 @@ mod tests {
     use super::*;
 
     fn root() -> TeamRoot {
-        parse_root("team: neuroai\nroles:\n  core: {tier: 2}\n  member: {tier: 1}\n  guest: {tier: 0}\n").unwrap()
+        parse_root("team: neuroai\nroles: [core, member, pub]\n").unwrap()
+    }
+
+    #[test]
+    fn roles_are_plain_names_no_tier() {
+        let r = root();
+        assert_eq!(r.roles, vec!["core", "member", "pub"]); // 无 tier，纯名字
     }
 
     #[test]
@@ -388,16 +394,16 @@ mod tests {
         let mut view = merge(&root(), &[af]);
         let gh = vec![
             GhMember { login: "alice".into(), pubkeys: vec!["ssh-ed25519 KA".into()], role: "member".into() },
-            GhMember { login: "bob".into(), pubkeys: vec!["ssh-ed25519 KB".into()], role: "guest".into() },
+            GhMember { login: "bob".into(), pubkeys: vec!["ssh-ed25519 KB".into()], role: "pub".into() },
         ];
         fold_github(&mut view, &gh);
         // alice：本地档保留（角色仍 core），但补上 GitHub 公钥
         let alice = view.members.iter().find(|m| m.name == "alice").unwrap();
         assert_eq!(alice.role, "core", "本地手写角色优先");
         assert_eq!(alice.pubkey, "ssh-ed25519 KA", "补上 GitHub 公钥");
-        // bob：GitHub 独有 → 自动加入，角色来自 GitHub 映射
+        // bob：GitHub 独有 → 自动加入，角色来自 GitHub 映射（org 外 → pub）
         let bob = view.members.iter().find(|m| m.name == "bob").unwrap();
-        assert_eq!(bob.role, "guest");
+        assert_eq!(bob.role, "pub");
         assert_eq!(bob.identity, "bob");
         assert_eq!(view.members.len(), 2);
     }
@@ -413,8 +419,7 @@ mod tests {
     #[test]
     fn default_roles_when_omitted() {
         let r = parse_root("team: neuroai\n").unwrap();
-        assert_eq!(r.roles.get("core").unwrap().tier, 2);
-        assert_eq!(r.roles.get("guest").unwrap().tier, 0);
+        assert_eq!(r.roles, vec!["core", "member", "pub"]); // 无 tier，纯名字
     }
 
     #[test]
@@ -432,13 +437,13 @@ machines:
     grants:
       core: 2
       member: 1
-      guest: 0
+      pub: 0
 "#,
         )
         .unwrap();
         assert_eq!(mf.member.role, "core");
         assert_eq!(mf.machines[0].grants.get("core"), Some(&2));
-        assert_eq!(mf.machines[0].grants.get("guest"), Some(&0));
+        assert_eq!(mf.machines[0].grants.get("pub"), Some(&0));
     }
 
     #[test]
@@ -448,15 +453,15 @@ machines:
     }
 
     fn view3() -> TeamView {
-        // alice=core 贡献 gpu(core:2,member:1,guest:0)；bob=member；dan=guest
+        // alice=core 贡献 gpu(core:2,member:1,pub:0)；bob=member；dan=pub
         let mut af = new_member_file("alice", "KA", "core");
         upsert_machine(&mut af, Machine {
             name: "gpu".into(), host: "10.0.0.1".into(), port: 22, jump: None,
             username: String::new(), transport: "direct".into(),
-            grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1), ("guest".into(), 0)]),
+            grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1), ("pub".into(), 0)]),
         });
         let bf = new_member_file("bob", "KB", "member");
-        let df = new_member_file("dan", "KD", "guest");
+        let df = new_member_file("dan", "KD", "pub");
         merge(&root(), &[af, bf, df])
     }
 
@@ -467,7 +472,7 @@ machines:
         let by = |n: &str| v.members.iter().find(|m| m.name == n).unwrap().clone();
         assert_eq!(v.effective_tier(&gpu, &by("alice")), Some(2)); // core
         assert_eq!(v.effective_tier(&gpu, &by("bob")), Some(1));   // member
-        assert_eq!(v.effective_tier(&gpu, &by("dan")), Some(0));   // guest
+        assert_eq!(v.effective_tier(&gpu, &by("dan")), Some(0));   // pub
     }
 
     #[test]
@@ -515,7 +520,7 @@ machines:
 
         let r = root();
         let rback = parse_root(&root_to_yaml(&r).unwrap()).unwrap();
-        assert_eq!(rback.roles.get("core").unwrap().tier, 2);
+        assert_eq!(rback.roles, vec!["core", "member", "pub"]);
     }
 
     #[test]
@@ -534,7 +539,7 @@ machines:
 "#;
         let (root, files) = migrate_flat(old).unwrap();
         assert_eq!(root.team, "neuroai");
-        assert!(root.roles.contains_key("member"));
+        assert!(root.roles.contains(&"member".to_string()));
         // 两个成员各一份文件
         assert_eq!(files.len(), 2);
         // 机器归到第一个成员（owner），tier=2 → grants{member:2}

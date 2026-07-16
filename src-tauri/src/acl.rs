@@ -76,7 +76,7 @@ pub struct AclPlan {
 pub fn compile(view: &TeamView) -> AclPlan {
     // 每个角色一个 group（即使暂时没成员，也声明出来供规则引用）。
     let mut groups: Vec<(String, Vec<String>)> = Vec::new();
-    for role in view.roles.keys() {
+    for role in &view.roles {
         let mut names: Vec<String> = view
             .members_of_role(role)
             .iter()
@@ -181,16 +181,16 @@ mod tests {
         crate::team::parse_root("team: NeuroAI Lab\n").unwrap() // 带空格大写测 slug
     }
 
-    // alice=core 贡献 gpu(core:2, member:1, guest:0)；bob=member；dan=guest
+    // alice=core 贡献 gpu(core:2, member:1, pub:0)；bob=member；dan=pub
     fn view() -> TeamView {
         let mut af = new_member_file("alice", "KA", "core");
         upsert_machine(&mut af, Machine {
             name: "gpu".into(), host: "10.0.0.1".into(), port: 22, jump: None,
             username: String::new(), transport: "tailnet".into(),
-            grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1), ("guest".into(), 0)]),
+            grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1), ("pub".into(), 0)]),
         });
         let bf = new_member_file("bob", "KB", "member");
-        let df = new_member_file("dan", "KD", "guest");
+        let df = new_member_file("dan", "KD", "pub");
         merge(&root(), &[af, bf, df])
     }
 
@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn rules_per_role_by_grant() {
         let p = compile(&view());
-        // gpu 对 core=2(check) / member=1(accept) / guest=0(无规则)
+        // gpu 对 core=2(check) / member=1(accept) / pub=0(无规则)
         let core = p.ssh.iter().find(|r| r.role == "core").unwrap();
         assert_eq!(core.action, "check");
         assert_eq!(core.check_period.as_deref(), Some("12h"));
@@ -213,8 +213,8 @@ mod tests {
         assert_eq!(member.action, "accept");
         assert_eq!(member.check_period, None);
 
-        // guest grant=0 → 无 ssh 规则
-        assert!(p.ssh.iter().all(|r| r.role != "guest"));
+        // pub grant=0 → 无 ssh 规则
+        assert!(p.ssh.iter().all(|r| r.role != "pub"));
     }
 
     #[test]

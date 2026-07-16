@@ -514,7 +514,7 @@ fn share_server(
     }
     // 跳板：对每个角色开档 0（列进配置但不给 shell），已存在则不改。
     let jump_grants: std::collections::BTreeMap<String, u8> =
-        view.roles.keys().map(|r| (r.clone(), 0u8)).collect();
+        view.roles.iter().map(|r| (r.clone(), 0u8)).collect();
     for j in &chain {
         if !mf.machines.iter().any(|m| m.name == j.name) {
             team::upsert_machine(&mut mf, to_machine(j, jump_grants.clone()));

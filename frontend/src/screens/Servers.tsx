@@ -64,12 +64,12 @@ export function Servers({
   const [addSelf, setAddSelf] = useState(false); // 把本机登记成节点
 
   // 团队角色（贡献时按角色开档）+ 我的成员名（写进我的 members/<我>.yaml）。
-  const [roles, setRoles] = useState<string[]>(["core", "member", "guest"]);
+  const [roles, setRoles] = useState<string[]>(["core", "member", "pub"]);
   const myName = me?.user || "";
   useEffect(() => {
     if (!teamPath) return;
     data.readTeamView(teamPath)
-      .then((v) => setRoles(Object.keys(v.roles)))
+      .then((v) => setRoles(v.roles))
       .catch(() => {});
   }, [teamPath]);
 
@@ -218,8 +218,8 @@ function LaunchCard({
   const ready = !!(s.has_secret && s.username);
   const [confirming, setConfirming] = useState(false);
   const [sharing, setSharing] = useState(false); // 展开角色授权面板
-  // grants：每个角色开的档位。默认 core=2 / member=1 / guest=0（缺省 1）。
-  const defaultTier = (r: string) => (r === "core" ? 2 : r === "guest" ? 0 : 1);
+  // grants：每个角色开的档位。默认 core=2 / member=1 / pub=0（缺省 1）。
+  const defaultTier = (r: string) => (r === "core" ? 2 : r === "pub" ? 0 : 1);
   const [grants, setGrants] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState(false);
   const [shareErr, setShareErr] = useState("");

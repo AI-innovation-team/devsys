@@ -41,8 +41,9 @@ build/
 # 真实拓扑（本地）——用 config.yaml.example 做模板
 config.yaml
 
-# 真实 team.yaml 是测试/使用产物（含真实拓扑），只提交 *.example.yaml
+# 真实 team.yaml / 成员文件是测试/使用产物（含真实身份+拓扑），只提交 *.example.yaml
 examples/team.yaml
+examples/members/
 
 # GitHub 花名册缓存（本地，不入 git；由 sync 刷新）
 .github-roster.json

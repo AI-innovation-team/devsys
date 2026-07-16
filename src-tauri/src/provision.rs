@@ -3,7 +3,7 @@
 // 这是「共享」从"拓扑可见"变成"队友真能登进去"的那一步(v1 过渡方案,不等 tailnet sidecar)。
 // 终态会换成 Tailscale SSH + ACL(见 acl.rs),那时 authorized_keys 这套退役。
 //
-// RBAC:同一台机,不同角色不同档 —— core 成员拿 sudo、member 只受限、guest 只借跳板。
+// RBAC:同一台机,不同角色不同档 —— core 成员拿 sudo、member 只受限、pub 只借跳板。
 // 每个成员的实际档位 = 该机对他角色开的 grant。于是**一台机的下发脚本里,不同人不同权限**。
 //   档 0 → 不建账号(纯跳板) · 档 1 → 独立账号无 sudo · 档 2 → 独立账号 + sudo
 //
@@ -229,9 +229,9 @@ mod tests {
     }
 
     #[test]
-    fn guest_grant0_gets_no_account() {
-        // gpu 对 guest 开 0；dan 是 guest → 不建账号
-        let v = view(&[("guest", 0)], &[("dan", KEY_A, "guest")]);
+    fn pub_grant0_gets_no_account() {
+        // gpu 对 pub 开 0；dan 是 pub → 不建账号
+        let v = view(&[("pub", 0)], &[("dan", KEY_A, "pub")]);
         let p = plan(&v, "gpu").unwrap();
         assert!(p.accounts.is_empty());
         assert!(!p.script.contains("useradd"));
@@ -264,15 +264,15 @@ mod tests {
     #[test]
     fn same_machine_different_roles_different_tiers() {
         let v = view(
-            &[("core", 2), ("member", 1), ("guest", 0)],
-            &[("alice", KEY_A, "core"), ("bob", KEY_A, "member"), ("dan", KEY_A, "guest")],
+            &[("core", 2), ("member", 1), ("pub", 0)],
+            &[("alice", KEY_A, "core"), ("bob", KEY_A, "member"), ("dan", KEY_A, "pub")],
         );
         let p = plan(&v, "gpu").unwrap();
-        // alice(core)→sudo, bob(member)→无sudo, dan(guest)→无账号
+        // alice(core)→sudo, bob(member)→无sudo, dan(pub)→无账号
         let acct = |n: &str| p.accounts.iter().find(|a| a.name == n);
         assert!(acct("alice").unwrap().sudo, "core 拿 sudo");
         assert!(!acct("bob").unwrap().sudo, "member 无 sudo");
-        assert!(acct("dan").is_none(), "guest(档0) 不建账号");
+        assert!(acct("dan").is_none(), "pub(档0) 不建账号");
         assert!(p.script.contains("useradd -m -s /bin/bash 'alice'"));
         assert!(p.script.contains("useradd -m -s /bin/bash 'bob'"));
     }

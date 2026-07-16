@@ -380,9 +380,9 @@ export function Team({
                   </div>
                 </div>
                 <div className="field">
-                  <label>角色（决定他在各机上的权限档：core=sudo / member=受限 / guest=跳板）</label>
+                  <label>角色（决定他在各机上的权限档：core=sudo / member=受限 / pub=跳板）</label>
                   <div className="seg">
-                    {Object.keys(cfg.roles).map((r) => (
+                    {cfg.roles.map((r) => (
                       <button key={r} className={newRole === r ? "on" : ""} onClick={() => setNewRole(r)}>{r}</button>
                     ))}
                   </div>
@@ -459,7 +459,7 @@ export function Team({
           </div>
           <div className="cfg-body">
             <p className="acl-intro">谁把什么算力、以什么权限、给了谁 —— 悬停看细节。这就是团队的织物。</p>
-            <TeamGraph view={cfg} />
+            <TeamGraph view={cfg} me={ident.login || myName} />
           </div>
         </article>
       )}

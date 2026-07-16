@@ -76,11 +76,11 @@ fn full_sharing_loop() {
     std::fs::write(arepo.join("team.yaml"), team::root_to_yaml(&root).unwrap()).unwrap();
     let mut alice = team::new_member_file("alice", ALICE_KEY, "core");
 
-    // 2) 贡献 GPU：core→2, member→1, guest→0（RBAC）
+    // 2) 贡献 GPU：core→2, member→1, pub→0（RBAC）
     team::upsert_machine(&mut alice, team::Machine {
         name: "gpu-01".into(), host: "192.168.1.10".into(), port: 22, jump: None,
         username: String::new(), transport: "direct".into(),
-        grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1), ("guest".into(), 0)]),
+        grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1), ("pub".into(), 0)]),
     });
     write_member(&arepo, &alice);
 
@@ -161,7 +161,7 @@ fn shared_machine_with_jump_needs_its_jump() {
     team::upsert_machine(&mut alice, team::Machine {
         name: "alice-mac".into(), host: "100.64.0.5".into(), port: 22, jump: None,
         username: String::new(), transport: "tailnet".into(),
-        grants: BTreeMap::from([("core".into(), 0), ("member".into(), 0), ("guest".into(), 0)]),
+        grants: BTreeMap::from([("core".into(), 0), ("member".into(), 0), ("pub".into(), 0)]),
     });
     // 内网 GPU 经跳板到达
     team::upsert_machine(&mut alice, team::Machine {
@@ -191,10 +191,8 @@ fn shared_machine_with_jump_needs_its_jump() {
 #[test]
 fn github_roster_folds_into_view() {
     let dir = fresh("gh-fold");
-    // team.yaml 绑定 org（core-team→core，其余→member）
-    let team_yaml = format!(
-        "team: neuroai\nroles:\n  core: {{tier: 2}}\n  member: {{tier: 1}}\n  guest: {{tier: 0}}\ngithub:\n  org: neuroai-lab\n  role_map:\n    core-team: core\n    '*': member\n"
-    );
+    // team.yaml 绑定 org（core-team→core，其余→member）。角色现为纯名字列表。
+    let team_yaml = "team: neuroai\nroles: [core, member, pub]\ngithub:\n  org: neuroai-lab\n  role_map:\n    core-team: core\n    '*': member\n".to_string();
     std::fs::write(dir.join("team.yaml"), &team_yaml).unwrap();
     let root = team::parse_root(&team_yaml).unwrap();
     assert!(root.github.is_some(), "绑定被解析出来");
