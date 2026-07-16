@@ -128,6 +128,33 @@ pub fn remove(dir: &PathBuf, name: &str) -> Result<Vec<Server>, String> {
     Ok(list)
 }
 
+// 跟着 jump 引用把跳板链走全（内→外顺序：[直接前驱, …, 最外层]）。
+// jump 是「指向另一台机的名字」，多跳 = 链式引用（target.jump→login、login.jump→edge）。
+// 防环（seen）、防悬空引用（找不到即报错）。纯函数，便于单测。
+pub fn jump_chain(list: &[Server], target: &Server) -> Result<Vec<Server>, String> {
+    let mut chain = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(target.name.clone());
+    let mut cur = target.clone();
+    while cur.transport == "jump" {
+        let jn = match cur.jump.as_deref() {
+            Some(j) => j.to_string(),
+            None => break,
+        };
+        let j = list
+            .iter()
+            .find(|s| s.name == jn)
+            .cloned()
+            .ok_or_else(|| format!("跳板 {jn} 不存在"))?;
+        if !seen.insert(j.name.clone()) {
+            return Err(format!("跳板链存在环：{jn}"));
+        }
+        chain.push(j.clone());
+        cur = j;
+    }
+    Ok(chain)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +214,52 @@ mod tests {
         let list = set_shared(&dir, "gpu", "team:a", false).unwrap(); // 撤销 a
         let g = list.iter().find(|x| x.name == "gpu").unwrap();
         assert_eq!(g.shared_to, vec!["team:b".to_string()]);
+    }
+
+    // 造一台经 `via` 跳板的机。
+    fn via(name: &str, via: &str) -> Server {
+        let mut s = srv(name);
+        s.transport = "jump".into();
+        s.jump = Some(via.into());
+        s
+    }
+
+    #[test]
+    fn jump_chain_none_for_direct() {
+        let gpu = srv("gpu");
+        assert!(jump_chain(&[gpu.clone()], &gpu).unwrap().is_empty());
+    }
+
+    #[test]
+    fn jump_chain_single_hop() {
+        let list = vec![srv("bastion"), via("gpu", "bastion")];
+        let gpu = list[1].clone();
+        let chain = jump_chain(&list, &gpu).unwrap();
+        assert_eq!(chain.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["bastion"]);
+    }
+
+    #[test]
+    fn jump_chain_multi_hop() {
+        // 校园两跳:gpu → login → edge。gpu.jump=login、login.jump=edge、edge 直连。
+        let list = vec![srv("edge"), via("login", "edge"), via("gpu", "login")];
+        let gpu = list[2].clone();
+        let chain = jump_chain(&list, &gpu).unwrap();
+        // 内→外:[login, edge]
+        assert_eq!(chain.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["login", "edge"]);
+    }
+
+    #[test]
+    fn jump_chain_detects_cycle() {
+        // a→b→a 成环,必须报错而非死循环。
+        let list = vec![via("a", "b"), via("b", "a")];
+        let a = list[0].clone();
+        assert!(jump_chain(&list, &a).is_err());
+    }
+
+    #[test]
+    fn jump_chain_dangling_ref_errors() {
+        let list = vec![via("gpu", "ghost")]; // 跳板不存在
+        let gpu = list[0].clone();
+        assert!(jump_chain(&list, &gpu).is_err());
     }
 }

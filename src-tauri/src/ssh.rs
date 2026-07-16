@@ -69,10 +69,10 @@ impl client::Handler for Client {
     }
 }
 
-// 保活：ProxyJump 时目标会话跑在跳板连接的通道流上，需持有跳板 handle 不让它断。
+// 保活：ProxyJump 时目标会话跑在跳板连接的通道流上，需持有整条跳板链的 handle 不让它断。
 struct Conn {
     handle: Handle<Client>,
-    _jump: Option<Handle<Client>>,
+    _jumps: Vec<Handle<Client>>,
 }
 
 async fn auth(handle: &mut Handle<Client>, server: &Server, secret: &str) -> Result<(), String> {
@@ -108,40 +108,53 @@ async fn connect_direct(
     Ok(handle)
 }
 
+// 在已有连接上开一条到 next 的 direct-tcpip 通道并在其上建立新 SSH 连接（认证）。
+async fn hop_through(
+    config: Arc<client::Config>,
+    via: &Handle<Client>,
+    via_name: &str,
+    next: &Server,
+    next_secret: &str,
+) -> Result<Handle<Client>, String> {
+    let channel = via
+        .channel_open_direct_tcpip(next.host.clone(), next.port as u32, "127.0.0.1".to_string(), 0)
+        .await
+        .map_err(|e| format!("经 {via_name} 开跳板通道失败：{e}"))?;
+    let stream = channel.into_stream();
+    let mut handle = client::connect_stream(config, stream, Client)
+        .await
+        .map_err(|e| format!("经跳板连 {} 失败：{e}", next.host))?;
+    auth(&mut handle, next, next_secret).await?;
+    Ok(handle)
+}
+
+// 建连，支持**多跳跳板链**：jumps 按「外→内」排（先连的在前）。
+//   直连:  []                    → connect_direct
+//   单跳:  [bastion]             → 连 bastion,再 direct-tcpip 到 target
+//   多跳:  [edge, login]         → 连 edge → edge 开道到 login → login 开道到 target
+// 校园那种「只能经登录节点、再进算力节点」的两跳以上,靠这条链兑现。
 async fn build_conn(
     target: &Server,
     target_secret: &str,
-    jump: Option<(Server, String)>,
+    jumps: Vec<(Server, String)>,
 ) -> Result<Conn, String> {
     let config = Arc::new(client::Config::default());
-    match jump {
-        Some((jsrv, jsec)) => {
-            // 先连跳板，再在其上开一条到目标 SSH 端口的 direct-tcpip 通道。
-            let jhandle = connect_direct(config.clone(), &jsrv, &jsec).await?;
-            let channel = jhandle
-                .channel_open_direct_tcpip(
-                    target.host.clone(),
-                    target.port as u32,
-                    "127.0.0.1".to_string(),
-                    0,
-                )
-                .await
-                .map_err(|e| format!("经 {} 开跳板通道失败：{e}", jsrv.name))?;
-            let stream = channel.into_stream();
-            let mut handle = client::connect_stream(config, stream, Client)
-                .await
-                .map_err(|e| format!("经跳板连 {} 失败：{e}", target.host))?;
-            auth(&mut handle, target, target_secret).await?;
-            Ok(Conn {
-                handle,
-                _jump: Some(jhandle),
-            })
-        }
-        None => Ok(Conn {
-            handle: connect_direct(config, target, target_secret).await?,
-            _jump: None,
-        }),
+    if jumps.is_empty() {
+        return Ok(Conn { handle: connect_direct(config, target, target_secret).await?, _jumps: vec![] });
     }
+    let mut held: Vec<Handle<Client>> = Vec::new();
+    // 最外层跳板:直连。
+    let mut cur = connect_direct(config.clone(), &jumps[0].0, &jumps[0].1).await?;
+    // 中间每一跳:在前一跳的连接上开道。
+    for i in 1..jumps.len() {
+        let next = hop_through(config.clone(), &cur, &jumps[i - 1].0.name, &jumps[i].0, &jumps[i].1).await?;
+        held.push(cur);
+        cur = next;
+    }
+    // 最后一跳 → 目标。
+    let handle = hop_through(config, &cur, &jumps[jumps.len() - 1].0.name, target, target_secret).await?;
+    held.push(cur);
+    Ok(Conn { handle, _jumps: held })
 }
 
 // 一次性命令的执行结果（授权下发用：装公钥、建账号）。
@@ -154,10 +167,10 @@ pub struct ExecOut {
 pub async fn exec(
     target: Server,
     target_secret: String,
-    jump: Option<(Server, String)>,
+    jumps: Vec<(Server, String)>,
     command: String,
 ) -> Result<ExecOut, String> {
-    let conn = build_conn(&target, &target_secret, jump).await?;
+    let conn = build_conn(&target, &target_secret, jumps).await?;
     let mut channel = conn.handle.channel_open_session().await.map_err(e2s)?;
     channel.exec(true, command).await.map_err(e2s)?;
 
@@ -184,9 +197,9 @@ pub async fn open(
     sessions: Arc<Sessions>,
     target: Server,
     target_secret: String,
-    jump: Option<(Server, String)>,
+    jumps: Vec<(Server, String)>,
 ) -> Result<String, String> {
-    let conn = build_conn(&target, &target_secret, jump).await?;
+    let conn = build_conn(&target, &target_secret, jumps).await?;
 
     let mut channel = conn.handle.channel_open_session().await.map_err(e2s)?;
     channel
@@ -206,7 +219,7 @@ pub async fn open(
     let close_ev = format!("ssh://close/{id}");
 
     tokio::spawn(async move {
-        let _keepalive = conn; // 持有 handle（含跳板）直到会话结束
+        let _keepalive = conn; // 持有 handle（含整条跳板链）直到会话结束
         loop {
             tokio::select! {
                 msg = channel.wait() => match msg {

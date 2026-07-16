@@ -676,13 +676,13 @@ async fn provision_apply(
         });
     }
 
-    let (target, secret, jump) = resolve_conn(&state, &server)?;
+    let (target, secret, jumps) = resolve_conn(&state, &server)?;
     // 脚本经 stdin 喂给 sh，避免超长命令行；sudo -n 需免密，否则请用 root 凭据。
     let cmd = format!(
         "sudo -n sh -s <<'DEVSYS_EOF'\n{}\nDEVSYS_EOF\n",
         plan.script
     );
-    let out = ssh::exec(target, secret, jump, cmd).await?;
+    let out = ssh::exec(target, secret, jumps, cmd).await?;
     Ok(ProvisionResult {
         ok: out.code == 0,
         code: out.code,
@@ -853,10 +853,12 @@ fn del_credential(state: State<AppState>, server: String) -> Result<(), String> 
 
 // ── SSH 会话（russh 原生：直连 / ProxyJump）───────────────
 
-// 解析一台机的连接材料：拓扑 + 凭据（含可选跳板）。锁不跨 await。
-type ConnParts = (store::Server, String, Option<(store::Server, String)>);
+// 解析一台机的连接材料：拓扑 + 凭据（含**多跳跳板链**）。锁不跨 await。
+// 跳板是「指向另一台机的名字」，多跳 = 链式引用：target.jump→login、login.jump→edge。
+// 这里跟着引用把链走全（内→外），再反转成「外→内」（先连的在前）交给 ssh 层。
+type ConnParts = (store::Server, String, Vec<(store::Server, String)>);
 fn resolve_conn(state: &State<'_, AppState>, server: &str) -> Result<ConnParts, String> {
-    let (target, jump_srv) = {
+    let (target, chain) = {
         let _g = state.lock.lock().unwrap();
         let list = store::load(&state.dir);
         let target = list
@@ -864,31 +866,19 @@ fn resolve_conn(state: &State<'_, AppState>, server: &str) -> Result<ConnParts, 
             .find(|s| s.name == server)
             .cloned()
             .ok_or_else(|| format!("服务器 {server} 不存在"))?;
-        let jump_srv = if target.transport == "jump" {
-            match target.jump.as_deref() {
-                Some(jn) => Some(
-                    list.iter()
-                        .find(|s| s.name == jn)
-                        .cloned()
-                        .ok_or_else(|| format!("跳板 {jn} 不存在"))?,
-                ),
-                None => None,
-            }
-        } else {
-            None
-        };
-        (target, jump_srv)
+        // 跟着 jump 引用把跳板链走全（内→外）。纯逻辑在 store::jump_chain（含防环/防悬空）。
+        let chain = store::jump_chain(&list, &target)?;
+        (target, chain)
     };
 
     let target_secret = state.vault.get(server)?;
-    let jump = match jump_srv {
-        Some(j) => {
-            let js = state.vault.get(&j.name)?;
-            Some((j, js))
-        }
-        None => None,
-    };
-    Ok((target, target_secret, jump))
+    // 反转成「外→内」（最外层先连），并取每跳凭据。
+    let mut jumps = Vec::new();
+    for j in chain.into_iter().rev() {
+        let js = state.vault.get(&j.name)?;
+        jumps.push((j, js));
+    }
+    Ok((target, target_secret, jumps))
 }
 
 #[tauri::command]
@@ -899,8 +889,8 @@ async fn ssh_open(
     ws: Option<String>,
 ) -> Result<String, String> {
     let _ = ws; // 阶段 4：tmux 持久会话
-    let (target, target_secret, jump) = resolve_conn(&state, &server)?;
-    ssh::open(app, state.sessions.clone(), target, target_secret, jump).await
+    let (target, target_secret, jumps) = resolve_conn(&state, &server)?;
+    ssh::open(app, state.sessions.clone(), target, target_secret, jumps).await
 }
 
 #[tauri::command]
