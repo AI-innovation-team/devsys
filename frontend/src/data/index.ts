@@ -84,6 +84,8 @@ export interface DataSource {
   tailnetDown(): Promise<void>;
   // 验证过的团队身份（来自 tailnet SSO 登录）。login 为空 = 未连/未登录。
   tailnetIdentity(): Promise<{ login: string; display: string; name: string }>;
+  // 「我是谁」的显示用身份（内建 tsnet → 系统 tailscale → OS 用户兜底）。仅用于图上标「我」。
+  localIdentity(): Promise<{ login: string; display: string; name: string }>;
 
   // ── 授权下发：让队友真能登进去（先 preview 看脚本，再 apply 执行）。档位按角色自动算 ──
   provisionPreview(teamPath: string, server: string): Promise<ProvisionPlan>;
@@ -138,6 +140,7 @@ export interface TeamView {
     username: string; transport: string;
     grants: Record<string, number>; // 角色 → 档位（RBAC）
     owner: string;                   // 贡献者
+    is_self: boolean;                // 是不是 owner 本人的设备（图里折进人节点）
   }[];
 }
 

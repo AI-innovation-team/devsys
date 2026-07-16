@@ -39,6 +39,7 @@ export const webData: DataSource = {
   tailnetUp: () => unsupported(),
   tailnetDown: () => unsupported(),
   tailnetIdentity: async () => ({ login: "", display: "", name: "" }),
+  localIdentity: async () => ({ login: "", display: "", name: "" }),
   provisionPreview: () => unsupported(),
   provisionApply: () => unsupported(),
   teamGitStatus: () => unsupported(),

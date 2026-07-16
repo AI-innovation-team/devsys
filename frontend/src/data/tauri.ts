@@ -140,6 +140,10 @@ export const tauriData: DataSource = {
     return invoke("tailnet_identity") as Promise<{ login: string; display: string; name: string }>;
   },
 
+  localIdentity() {
+    return invoke("local_identity") as Promise<{ login: string; display: string; name: string }>;
+  },
+
   async pickTeamSavePath(): Promise<string | null> {
     const r = await invoke("plugin:dialog|save", {
       options: {

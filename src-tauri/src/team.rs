@@ -57,6 +57,26 @@ pub struct Member {
     // 我在团队里的角色（引用 team.yaml 的 roles 键）。缺省 member。
     #[serde(default = "default_role")]
     pub role: String,
+    // ★ 切面模型：我共享的「自己这台设备」= 人节点的算力切面（人本身就是一台算力）。
+    // 与 machines（我贡献但「不是我」的服务器）区分。有 = 这个人在图里带算力环。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<Device>,
+}
+
+// 自身设备:人的算力切面。没有 name(名字就是这个人),其余同机器的「怎么到达 + 开档」。
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct Device {
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub username: String,
+    #[serde(default = "default_transport")]
+    pub transport: String,
+    #[serde(default = "default_grants")]
+    pub grants: BTreeMap<String, u8>,
 }
 
 fn default_role() -> String {
@@ -120,6 +140,9 @@ pub struct ViewMachine {
     pub transport: String,
     pub grants: BTreeMap<String, u8>,
     pub owner: String, // 贡献者（来自哪个 members/*.yaml）
+    // 这台是不是 owner 本人的设备（来自 member.device）。图里折进人节点;
+    // acl/provision 一视同仁（自身设备也要下发/编 ACL，它就是一台算力）。
+    pub is_self: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -196,6 +219,21 @@ pub fn merge(root: &TeamRoot, members: &[MemberFile]) -> TeamView {
             pubkey: mf.member.pubkey.clone(),
             role: mf.member.role.clone(),
         });
+        // 自身设备（算力切面）→ 一台 is_self 机器,名字即人名。
+        if let Some(d) = &mf.member.device {
+            view_machines.push(ViewMachine {
+                name: mf.member.name.clone(),
+                host: d.host.clone(),
+                port: d.port,
+                jump: d.jump.clone(),
+                username: d.username.clone(),
+                transport: d.transport.clone(),
+                grants: d.grants.clone(),
+                owner: mf.member.name.clone(),
+                is_self: true,
+            });
+        }
+        // 贡献的服务器（管但不是本人）。
         for m in &mf.machines {
             view_machines.push(ViewMachine {
                 name: m.name.clone(),
@@ -206,6 +244,7 @@ pub fn merge(root: &TeamRoot, members: &[MemberFile]) -> TeamView {
                 transport: m.transport.clone(),
                 grants: m.grants.clone(),
                 owner: mf.member.name.clone(),
+                is_self: false,
             });
         }
     }
@@ -321,6 +360,7 @@ pub fn migrate_flat(text: &str) -> Option<(TeamRoot, Vec<MemberFile>)> {
                 identity: String::new(), // 旧数据无验证身份
                 pubkey: mem.pubkey.clone(),
                 role: default_role(),
+                device: None,
             },
             machines: vec![],
         });
@@ -329,7 +369,7 @@ pub fn migrate_flat(text: &str) -> Option<(TeamRoot, Vec<MemberFile>)> {
         f.machines = machines;
     } else {
         files.push(MemberFile {
-            member: Member { name: owner, identity: String::new(), pubkey: String::new(), role: default_role() },
+            member: Member { name: owner, identity: String::new(), pubkey: String::new(), role: default_role(), device: None },
             machines,
         });
     }
@@ -354,6 +394,7 @@ pub fn new_member_file(name: &str, pubkey: &str, role: &str) -> MemberFile {
             identity: String::new(),
             pubkey: pubkey.trim().into(),
             role: if role.is_empty() { default_role() } else { role.into() },
+            device: None,
         },
         machines: vec![],
     }
@@ -473,6 +514,38 @@ machines:
         assert_eq!(v.effective_tier(&gpu, &by("alice")), Some(2)); // core
         assert_eq!(v.effective_tier(&gpu, &by("bob")), Some(1));   // member
         assert_eq!(v.effective_tier(&gpu, &by("dan")), Some(0));   // pub
+    }
+
+    #[test]
+    fn device_folds_into_self_machine() {
+        // alice 共享自己的设备(切面),另贡献一台服务器 gpu。
+        let mut af = new_member_file("alice", "KA", "core");
+        af.member.device = Some(Device {
+            host: "100.64.0.11".into(), port: 22, jump: None,
+            username: "alice".into(), transport: "tailnet".into(),
+            grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
+        });
+        upsert_machine(&mut af, Machine {
+            name: "gpu".into(), host: "10.0.0.1".into(), port: 22, jump: None,
+            username: String::new(), transport: "direct".into(),
+            grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
+        });
+        let v = merge(&root(), &[af]);
+        // 两台算力节点:自身设备(is_self,名=alice)+ 服务器 gpu。
+        assert_eq!(v.machines.len(), 2);
+        let dev = v.machines.iter().find(|m| m.name == "alice").unwrap();
+        assert!(dev.is_self, "自身设备标 is_self");
+        assert_eq!(dev.owner, "alice");
+        assert_eq!(dev.host, "100.64.0.11");
+        let gpu = v.machines.iter().find(|m| m.name == "gpu").unwrap();
+        assert!(!gpu.is_self, "贡献的服务器不是自身设备");
+        // device 走 YAML 往返不丢。
+        let back = parse_member(&member_to_yaml(&{
+            let mut f = new_member_file("alice", "KA", "core");
+            f.member.device = Some(Device { host: "1.2.3.4".into(), port: 22, jump: None, username: String::new(), transport: "tailnet".into(), grants: BTreeMap::from([("member".into(), 1)]) });
+            f
+        }).unwrap()).unwrap();
+        assert_eq!(back.member.device.unwrap().host, "1.2.3.4");
     }
 
     #[test]

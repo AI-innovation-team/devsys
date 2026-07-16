@@ -48,6 +48,8 @@ export function Team({
 
   // 验证过的团队身份（tailnet SSO）。login 为空 = 未连 tailnet。
   const [ident, setIdent] = useState<{ login: string; display: string; name: string }>({ login: "", display: "", name: "" });
+  // 显示用身份（含系统 tailscale / OS 用户兜底）——只喂图上标「我」。
+  const [localId, setLocalId] = useState<{ login: string; display: string; name: string }>({ login: "", display: "", name: "" });
   const verified = !!ident.login;
 
   // git 同步（配置即代码：团队配置放 git 仓库，每人维护自己那段）
@@ -63,6 +65,7 @@ export function Team({
       setIdent(id);
       if (id.name) setMyName(id.name); // 验证身份 → 用它派生的账号名（不再自填）
     }).catch(() => {});
+    data.localIdentity().then(setLocalId).catch(() => {});
   }, []);
   useEffect(() => {
     if (!teamPath) { setCfg(null); setGit(null); return; }
@@ -459,7 +462,7 @@ export function Team({
           </div>
           <div className="cfg-body">
             <p className="acl-intro">谁把什么算力、以什么权限、给了谁 —— 悬停看细节。这就是团队的织物。</p>
-            <TeamGraph view={cfg} me={ident.login || myName} />
+            <TeamGraph view={cfg} me={ident.login || localId.login || myName} />
           </div>
         </article>
       )}

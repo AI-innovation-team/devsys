@@ -773,6 +773,38 @@ fn tailnet_identity(tn: State<Arc<tailnet::Tailnet>>) -> Identity {
     }
 }
 
+// 「我是谁」的**显示用**身份（只用于图上标「我」等场景，非防冒名的严肃链）。
+// 兜底顺序：内建 tsnet SSO → 系统 Tailscale 身份 → OS 用户名。离线也尽量认得出你。
+#[tauri::command]
+fn local_identity(tn: State<Arc<tailnet::Tailnet>>) -> Identity {
+    if let Some((login, display)) = tn.status().identity() {
+        return Identity { name: team::slug_login(&login), login, display };
+    }
+    if let Some((login, display)) = system_tailscale_identity() {
+        return Identity { name: team::slug_login(&login), login, display };
+    }
+    let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
+    Identity { name: team::slug_login(&user), login: user.clone(), display: user }
+}
+
+// 读系统 Tailscale 的登录身份（若装了且已连）。纯显示兜底，失败静默返回 None。
+fn system_tailscale_identity() -> Option<(String, String)> {
+    let bins = ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"];
+    for bin in bins {
+        let out = std::process::Command::new(bin).args(["status", "--json"]).output().ok()?;
+        if !out.status.success() {
+            continue;
+        }
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+        let uid = v.get("Self")?.get("UserID")?.to_string();
+        let u = v.get("User")?.get(uid.trim_matches('"'))?;
+        let login = u.get("LoginName")?.as_str()?.to_string();
+        let display = u.get("DisplayName").and_then(|d| d.as_str()).unwrap_or(&login).to_string();
+        return Some((login, display));
+    }
+    None
+}
+
 // ── 凭据命令 ─────────────────────────────────────────────
 // 更新该机 username/auth（拓扑）+ 存密钥（keychain）+ 置 has_secret 标记位。
 
@@ -937,6 +969,7 @@ pub fn run() {
             tailnet_up,
             tailnet_down,
             tailnet_identity,
+            local_identity,
             save_credential,
             del_credential,
             ssh_open,

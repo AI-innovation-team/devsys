@@ -11,8 +11,8 @@ interface N {
   id: string;
   name: string;
   kind: "person" | "machine";
-  group: string; // 所属 org(包络分组);未来联邦=多组
-  me: boolean;   // 是不是「我」(当前登录身份)
+  compute: boolean; // 人节点:是否也是算力(共享了自身设备);机器节点恒 true
+  me: boolean;      // 是不是「我」(当前登录身份)
   x: number;
   y: number;
   vx: number;
@@ -21,6 +21,11 @@ interface N {
 }
 interface E { a: string; b: string }
 
+// 一台算力节点在图里的目标 id:自身设备折进 owner 的人节点,服务器是独立机器节点。
+function target(mc: TeamView["machines"][number]): string {
+  return mc.is_self ? `p:${mc.owner}` : `m:${mc.name}`;
+}
+
 function build(view: TeamView, me?: string): { nodes: N[]; edges: E[] } {
   // 「我」= 身份(SSO login)或账号名对得上的成员节点。
   const meKey = (me || "").trim().toLowerCase();
@@ -28,8 +33,9 @@ function build(view: TeamView, me?: string): { nodes: N[]; edges: E[] } {
     !!meKey && (m.identity.toLowerCase() === meKey || m.name.toLowerCase() === meKey);
   const nodes: N[] = [];
   const edges: E[] = [];
-  const has = new Set<string>();
-  const N = view.members.length + view.machines.length;
+  const selfDev = new Map(view.machines.filter((mc) => mc.is_self).map((mc) => [mc.owner, mc]));
+  const servers = view.machines.filter((mc) => !mc.is_self);
+  const N = view.members.length + servers.length;
   let k = 0;
   const place = () => {
     // 环形初始撒点 + 抖动,力导向再散成网。
@@ -37,35 +43,47 @@ function build(view: TeamView, me?: string): { nodes: N[]; edges: E[] } {
     k++;
     return { x: 0.5 + Math.cos(ang) * 0.28 + (Math.random() - 0.5) * 0.06, y: 0.5 + Math.sin(ang) * 0.28 + (Math.random() - 0.5) * 0.06 };
   };
+  const reachersOf = (mc: TeamView["machines"][number]) =>
+    view.members.filter((m) => m.name !== mc.owner && (mc.grants[m.role] ?? 0) > 0).map((m) => `${m.name}(档${mc.grants[m.role]})`);
 
+  // 人节点(含算力切面)
   for (const m of view.members) {
-    const owns = view.machines.filter((mc) => mc.owner === m.name).map((mc) => mc.name);
-    const access = view.machines
+    const dev = selfDev.get(m.name);
+    const ownServers = servers.filter((mc) => mc.owner === m.name).map((mc) => mc.name);
+    // 我能进的:所有算力节点(服务器 + 别人的设备),按角色算档。设备用 owner 名指代。
+    const canReach = view.machines
       .filter((mc) => mc.owner !== m.name && (mc.grants[m.role] ?? 0) > 0)
-      .map((mc) => `${mc.name}(档${mc.grants[m.role]})`);
+      .map((mc) => `${mc.is_self ? mc.owner : mc.name}(档${mc.grants[m.role]})`);
     const lines: string[] = [];
-    if (owns.length) lines.push(`贡献 ${owns.join("、")}`);
-    if (access.length) lines.push(`可访问 ${access.join("、")}`);
-    if (!lines.length) lines.push("无授权(仅本人节点)");
+    if (dev) lines.push(`本机算力 ${dev.host} · ${reachersOf(dev).length ? "可进 " + reachersOf(dev).join("、") : "仅自己"}`);
+    if (ownServers.length) lines.push(`贡献服务器 ${ownServers.join("、")}`);
+    if (canReach.length) lines.push(`可访问 ${canReach.join("、")}`);
+    if (!lines.length) lines.push(dev ? "只共享本机" : "仅消费(未共享算力)");
     const pos = place();
     const mine = isMe(m);
-    nodes.push({ id: `p:${m.name}`, name: m.name, kind: "person", group: view.team, me: mine, ...pos, vx: 0, vy: 0, card: { title: mine ? `${m.name}（我）` : m.name, type: `人 · ${m.role}`, lines } });
-    has.add(`p:${m.name}`);
+    nodes.push({
+      id: `p:${m.name}`, name: m.name, kind: "person", compute: !!dev, me: mine, ...pos, vx: 0, vy: 0,
+      card: { title: mine ? `${m.name}（我）` : m.name, type: dev ? `人 · ${m.role} · 算力` : `人 · ${m.role}`, lines },
+    });
   }
-  for (const mc of view.machines) {
-    const reachers = view.members
-      .filter((m) => m.name !== mc.owner && (mc.grants[m.role] ?? 0) > 0)
-      .map((m) => `${m.name}(档${mc.grants[m.role]})`);
+  // 服务器节点(独立算力,非本人)
+  for (const mc of servers) {
+    const reachers = reachersOf(mc);
     const lines: string[] = [];
     if (mc.owner) lines.push(`属于 ${mc.owner}`);
     lines.push(reachers.length ? `可进 ${reachers.join("、")}` : "无人可进");
     const pos = place();
-    nodes.push({ id: `m:${mc.name}`, name: mc.name, kind: "machine", group: view.team, me: false, ...pos, vx: 0, vy: 0, card: { title: mc.name, type: `机器 · ${mc.host}`, lines } });
-    has.add(`m:${mc.name}`);
-    if (mc.owner && has.has(`p:${mc.owner}`)) edges.push({ a: `p:${mc.owner}`, b: `m:${mc.name}` });
+    nodes.push({ id: `m:${mc.name}`, name: mc.name, kind: "machine", compute: true, me: false, ...pos, vx: 0, vy: 0, card: { title: mc.name, type: `机器 · ${mc.host}`, lines } });
+    if (mc.owner) edges.push({ a: `p:${mc.owner}`, b: `m:${mc.name}` }); // 归属(自身设备无此边,已折进人)
+  }
+  // 授权边:每个算力节点 ← 能进它的人(自身设备的边指向 owner 人节点 = 人→人)。
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  for (const mc of view.machines) {
+    const tgt = target(mc);
+    if (!nodeIds.has(tgt)) continue;
     for (const m of view.members) {
       if (m.name === mc.owner) continue;
-      if ((mc.grants[m.role] ?? 0) > 0) edges.push({ a: `p:${m.name}`, b: `m:${mc.name}` });
+      if ((mc.grants[m.role] ?? 0) > 0 && nodeIds.has(`p:${m.name}`)) edges.push({ a: `p:${m.name}`, b: tgt });
     }
   }
   return { nodes, edges };
@@ -92,7 +110,6 @@ export function TeamGraph({ view, me }: { view: TeamView; me?: string }) {
       machine: col("--info"),     // slate 蓝 = 机器
       dotHi: col("--accent"),     // 焦点/我/高亮边 = 主色
       edge: col("--border-strong"),
-      hull: col("--accent"),
       ink: col("--text-strong"),
       faint: col("--text-faint"),
       surface: col("--surface-raised"),
@@ -102,9 +119,6 @@ export function TeamGraph({ view, me }: { view: TeamView; me?: string }) {
     const idx = new Map(nodes.map((n, i) => [n.id, i]));
     const nbr = new Map<string, Set<string>>(nodes.map((n) => [n.id, new Set<string>()]));
     for (const e of edges) { nbr.get(e.a)?.add(e.b); nbr.get(e.b)?.add(e.a); }
-    // 按 org 分组(将来联邦=多组,各画一个包络)。
-    const groups = new Map<string, number[]>();
-    nodes.forEach((n, i) => { (groups.get(n.group) ?? groups.set(n.group, []).get(n.group)!).push(i); });
 
     let raf = 0, settle = 0;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -153,12 +167,6 @@ export function TeamGraph({ view, me }: { view: TeamView; me?: string }) {
       const strong = !!hv; // 悬停=强聚焦(其余狠狠淡出);「我」软焦点只轻轻提亮
       const near = focus ? nbr.get(focus) : null;
 
-      // org 包络(压在最底;不标名,一片无名领地即可)
-      for (const ids of groups.values()) {
-        const pts = ids.map((i) => ({ x: X(nodes[i].x), y: Y(nodes[i].y) }));
-        drawHull(ctx, pts, 30, hexA(p.hull, 0.07), hexA(p.hull, 0.28));
-      }
-
       // 边(统一素线,不分类型;轻微弧线,密集时不打架)
       for (const e of edges) {
         const a = nodes[idx.get(e.a)!], b = nodes[idx.get(e.b)!];
@@ -188,6 +196,11 @@ export function TeamGraph({ view, me }: { view: TeamView; me?: string }) {
           ctx.strokeStyle = hexA(p.dotHi, dim ? 0.3 : 0.9); ctx.lineWidth = 1.6; ctx.stroke();
         }
         const base = n.kind === "person" ? p.person : p.machine; // 类型色始终在
+        // 「人+算力」环:人节点若共享了自身设备,外描一圈算力色 = 他本人就是一台算力。
+        if (n.kind === "person" && n.compute) {
+          ctx.beginPath(); ctx.arc(x, y, r + 2.4, 0, Math.PI * 2);
+          ctx.strokeStyle = hexA(p.machine, dim ? 0.3 : 0.85); ctx.lineWidth = 2; ctx.stroke();
+        }
         if (isFocus && strong) { ctx.shadowColor = hexA(base, 0.65); ctx.shadowBlur = 12; }
         ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fillStyle = dim ? hexA(base, 0.28) : base;
@@ -234,49 +247,13 @@ export function TeamGraph({ view, me }: { view: TeamView; me?: string }) {
       <canvas ref={ref} style={{ height }} />
       <div className="tgraph-legend">
         <span><i className="d person" />人</span>
+        <span><i className="d compute" />人+算力</span>
         <span><i className="d machine" />机器</span>
         <span><i className="d me" />我</span>
-        <span className="hint">一圈包络 = 团队(无中心) · 悬停查看身份与授权</span>
+        <span className="hint">悬停查看身份与授权</span>
       </div>
     </div>
   );
-}
-
-// 凸包 → 外扩 → 平滑闭合曲线,画成一片柔和领地。
-function drawHull(ctx: CanvasRenderingContext2D, pts: { x: number; y: number }[], pad: number, fill: string, stroke: string) {
-  if (pts.length < 3) {
-    // 太少节点:退化成一个包住它们的圆角框。
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const q of pts) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
-    ctx.beginPath();
-    const r = pad;
-    rr(ctx, x0 - pad, y0 - pad, x1 - x0 + pad * 2, y1 - y0 + pad * 2, r);
-    ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.stroke();
-    return;
-  }
-  const hull = convexHull(pts);
-  let cx = 0, cy = 0; for (const q of hull) { cx += q.x; cy += q.y; } cx /= hull.length; cy /= hull.length;
-  const ex = hull.map((q) => { const dx = q.x - cx, dy = q.y - cy, d = Math.hypot(dx, dy) || 1; return { x: q.x + (dx / d) * pad, y: q.y + (dy / d) * pad }; });
-  ctx.beginPath();
-  const n = ex.length;
-  const mid = (i: number, j: number) => ({ x: (ex[i].x + ex[j].x) / 2, y: (ex[i].y + ex[j].y) / 2 });
-  let m0 = mid(n - 1, 0);
-  ctx.moveTo(m0.x, m0.y);
-  for (let i = 0; i < n; i++) { const m1 = mid(i, (i + 1) % n); ctx.quadraticCurveTo(ex[i].x, ex[i].y, m1.x, m1.y); }
-  ctx.closePath();
-  ctx.fillStyle = fill; ctx.fill();
-  ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.setLineDash([6, 5]); ctx.stroke(); ctx.setLineDash([]);
-}
-
-function convexHull(pts: { x: number; y: number }[]): { x: number; y: number }[] {
-  const p = [...pts].sort((a, b) => a.x - b.x || a.y - b.y);
-  const cross = (o: any, a: any, b: any) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-  const lo: any[] = [];
-  for (const q of p) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); }
-  const up: any[] = [];
-  for (let i = p.length - 1; i >= 0; i--) { const q = p[i]; while (up.length >= 2 && cross(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q); }
-  lo.pop(); up.pop();
-  return lo.concat(up);
 }
 
 function drawCard(ctx: CanvasRenderingContext2D, nx: number, ny: number, W: number, H: number, card: { title: string; type: string; lines: string[] }, p: any) {
