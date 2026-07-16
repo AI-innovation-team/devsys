@@ -64,7 +64,17 @@ assets/logo/     节点网 logo(light/dark)
 
 - **v0(接得上)✅ 已落地**:登录页去掉"本地/远程"切换,回归纯本地解锁(密码=保险库钥匙);服务器列表**按来源合并**(`Server.source = mine | team:<名>`,分组渲染、团队机只读);app 内「连接团队」入口(Team 屏占位 + 侧栏入口)。
 - **v1(配得起)**:团队配置(建团队/邀成员/按人授权)→ 把门户 admin 泛化成 `team.yaml`。数据面复用原生 SSH。**贡献侧**:机器加 `shared_to: [team:<名>]`,把拓扑 + 授权声明提交进 team.yaml(凭据不出本机),队友那侧落成只读节点 —— 与 v0 的消费侧合成闭环。见下「共享算力模型」。
-- **v2(长得开)**:自助贡献机器 + tailnet 织物 + 规格/负载登记 → 动态算力网;调度接 **SkyPilot**(见下);数据成网(内容寻址 git-annex/DVC over tailnet);持久 agent 托管 + 沙箱(见下);裁判 agent 评审 = 去中心化同行评阅。
+- **v2(长得开)**:自助贡献机器 + tailnet 织物 + 规格/负载登记 → 动态算力网;调度接 **SkyPilot**(见下);数据成网(内容寻址 git-annex/DVC over tailnet);持久 agent 托管 + 沙箱(见下);裁判 agent 评审 = 去中心化同行评阅;出版/评审层接 **DeSci**(见下「DeSci 用法」)。
+
+## 主页形态(方向,v1.5→v2,反复用到)
+
+主页 = **驾驶舱**,两半 + 一条缝合它们的核心交互:
+
+- **织物图 = 地图/导航**(左):现有 `TeamGraph`(力导向织物、节点=人/机/将来的 agent、org=无名包络、无特权中心=P2P、悬停出身份与授权、主色环标「我」)。回答「在哪、够得着谁」。这张图**很重要、大有可为**,是主页一等公民,不是装饰。
+- **工作区 = 工作面(网页版 tmux)**(右):多 pane、可持久的活会话。回答「正在干什么」。落在现有 `tmux.py`(会话封装)+ `ssh.rs` PTY + `Terminal.tsx`(xterm)上,不从零造。
+- **缝合 = 点节点→开 pane**:图是**启动器/导航器**不是只读画;在地图上点一个节点 → 工作区开出它的终端 pane。地图选位置,工作面出终端。
+- **北极星落地**:v2 持久 agent 上后,**agent 也是节点** —— 地图上是一个点、工作区里是一个 pane;于是人和 AI **共用同一张地图、同一个工作面**共事。「人与 AI 共治」第一次有了具体 UI 形态(一张织物上一起干活,不是两个工具)。
+- **时序**:v1 收口后才动。先留住这个方向。
 
 ## 共享算力模型(v1→v2 定稿,反复用到)
 
@@ -80,5 +90,17 @@ assets/logo/     节点网 logo(light/dark)
   - 信任队友 → 普通容器够;**不可信 / agent 生成的代码 → 必须强沙箱**(普通 docker 共享内核**不是**安全边界)。
   - **沙箱选型**:CPU coding agent → **Docker Sandboxes**(2026-03,microVM 硬隔离、跨平台、复杂度被 Docker 封装、原生认 Claude Code);**GPU + agent(我们核心)→ Docker Sandboxes 撑不起**(microVM/Firecracker 天生不支持 GPU 直通)→ 盯 **NVIDIA OpenShell**(GTC 2026 开源、GPU-native、原生 claude、声明式策略,最对味)/ Kata(microVM+GPU 直通)/ gVisor+nvproxy(拦 CUDA,安全性反而更好)/ Modal(托管)。**GPU 直通削弱隔离是必然折中**(驱动=共享攻击面);真直通要裸机+IOMMU。强沙箱**不自己造,接现成**。
 - **SkyPilot = 可插的作业调度组件,不是底座**。它把机器抽象成"能 SSH 的盒子",恰好吃我们 tailnet 上登记好的算力池:登记成它的 **SSH Node Pool**(`~/.sky/ssh_node_pools.yaml` → `sky ssh up` → `sky launch --infra ssh/<pool>`)或对接 on-prem K8s,`sky launch` 就调度(比价/spot/队列/serve)。它的团队层(API server + Workspaces + User/Admin RBAC,v0.10 起)是**中心化**的、单团队够用 —— 但**去中心化联邦 + 每人贡献节点 + 责任追踪仍是我们的**,别让它的中心 API server 成为身份/治理真源(可共用同一 IdP 对齐身份)。其 Sandboxes 亦可选用。**松耦合接,别焊死**(同时留住直连 SSH / SkyPilot / 未来别的调度器)。
+
+## DeSci 用法(v2 出版/评审层,定稿别再重推)
+
+调研过 DeSci(去中心化学术生态:区块链 + DAO + 代币激励 + IPFS/Arweave)。结论:**它补的是我们北极星的另一半——出版/评审/资助层**(我们现在造的是织物/算力/身份层),互补不重叠。**只用它的数据层,存储/身份/信任全用我们自己的。** 一句话心智:**DeSci Codex 当「公地出口格式」,tailnet+git 当「私有/联邦存储」,信任永远走具名担责 + 裁判 agent。**
+
+- **① 抄格式不抄栈**:采用 **RO-Crate 研究对象**(`ro-crate-metadata.json`,JSON-LD,描述手稿/代码/数据/环境 + 校验和)当「可复现仓库=信任原子」的落地 schema。纯元数据文件,加到任何 git 仓库即可,**不需 IPFS/链**。别自己发明 schema(`github.com/desci-labs/nodes` 开源,有 nodes-lib/CLI)。
+- **② 内容寻址落织物**:它用 IPFS CID,我们换 **git SHA + git-annex/DVC 哈希 over tailnet**。一样内容寻址/可验证/可版本,但**数据不出织物**(守「数据不出本机」「可达性交 tailnet」)。
+- **③ 重跑=保真验证 复用算力共享**:研究对象带环境引用(Docker 镜像)→ 拉对象 → 在共享节点拉起环境跑一遍 → diff 输出。**就是 SkyPilot on tailnet SSH pool**,不新造;DeSci 给「验什么」,我们给「在哪验」。
+- **④ 信任层换我们的(坚决不用 DeSci 这层)**:DeSci 把作者/评审可信度记成**链上声誉分**(AI/agent 也能挣声誉背书,因为它信数字);我们换成研究对象里嵌**签名担责记录**——具名担责人(tailnet SSO 身份)+ 裁判 agent 评审 + 被追踪用于校准 agent 的修改 diff。**分道点**:DeSci 用「声誉复利」替代守门人,我们用「具名担责 + 可追踪校准」替代守门人;它不校准 agent 所以不需追踪链,我们要,所以担责/追踪是铁律(呼应「责任为门·担责即校准」;匿名/纯声誉身份会断追踪链 → 禁用)。
+- **在三层信任里的位置**:ring1 私有 = 对象存 tailnet+git-annex;ring2 联邦 = 同一 RO-Crate 对象在盟友 org 间同步(格式互通);ring3 公地 = 用 nodes-lib 注册 dPID/DOI、推 DeSci Codex/IPFS。**因为第一天就用 RO-Crate,通往公地零翻译**——DeSci 是我们的**公地网关**,不是内部存储(呼应「别一步跳到公地」)。
+- **LabDAO**(P2P 算力/服务交易 Lab-Exchange):思路同源但绑生物信息+链上结算,**参考协议、不接底座**(我们走 tailnet+SkyPilot)。
+- **现在不写代码**:这是 v2,当前重心仍是 v1 共享算力闭环。v2 第一刀 = 定义 RO-Crate 研究对象 schema + `examples/` 范例对象。
 
 已完成(截至本轮):Tauri 阶段0–2(脚手架+传输抽象、本地拓扑/凭据、russh 原生 SSH 真连成功);Stronghold 保险库;登录门(密码=钥匙);SSH config 导入(读 ~/.ssh/config + 文件选择 + 带 IdentityFile 私钥导入);本地退出登录;**v0 三件事(纯本地解锁 / 按来源分组 / 连接团队入口)** + 清理废弃 creds.rs。
