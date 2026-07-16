@@ -91,6 +91,20 @@ assets/logo/     节点网 logo(light/dark)
   - **沙箱选型**:CPU coding agent → **Docker Sandboxes**(2026-03,microVM 硬隔离、跨平台、复杂度被 Docker 封装、原生认 Claude Code);**GPU + agent(我们核心)→ Docker Sandboxes 撑不起**(microVM/Firecracker 天生不支持 GPU 直通)→ 盯 **NVIDIA OpenShell**(GTC 2026 开源、GPU-native、原生 claude、声明式策略,最对味)/ Kata(microVM+GPU 直通)/ gVisor+nvproxy(拦 CUDA,安全性反而更好)/ Modal(托管)。**GPU 直通削弱隔离是必然折中**(驱动=共享攻击面);真直通要裸机+IOMMU。强沙箱**不自己造,接现成**。
 - **SkyPilot = 可插的作业调度组件,不是底座**。它把机器抽象成"能 SSH 的盒子",恰好吃我们 tailnet 上登记好的算力池:登记成它的 **SSH Node Pool**(`~/.sky/ssh_node_pools.yaml` → `sky ssh up` → `sky launch --infra ssh/<pool>`)或对接 on-prem K8s,`sky launch` 就调度(比价/spot/队列/serve)。它的团队层(API server + Workspaces + User/Admin RBAC,v0.10 起)是**中心化**的、单团队够用 —— 但**去中心化联邦 + 每人贡献节点 + 责任追踪仍是我们的**,别让它的中心 API server 成为身份/治理真源(可共用同一 IdP 对齐身份)。其 Sandboxes 亦可选用。**松耦合接,别焊死**(同时留住直连 SSH / SkyPilot / 未来别的调度器)。
 
+## 可达性与模型完备性(已知缺口清单,别误以为 model 已封口)
+
+**可达性(reachability)—— 主体已覆盖**。核心原则:**内网 ≠ 需要跳板**;能出 443 的机就自己上 mesh 直连,跳板/桥只给"出不了公网 / 装不了 tailscale"的节点。
+- tailnet 直连 P2P ✅ · 同 LAN `direct` ✅ · 公网 IP `direct` ✅ · NAT/CGNAT/对称 NAT 打洞失败→DERP 兜底 ✅(tailscale 扛,非我们的事)
+- **多跳跳板链 ✅ 已实现**:jump 是"指向另一台机的名字",多跳=链式引用(target.jump→login、login.jump→edge)。`store::jump_chain` 走链(防环/防悬空),`ssh.rs::build_conn` 嵌套多层 direct-tcpip。校园"edge→登录节点→算力节点"两跳以上兑现。数据模型/前端未改。
+- **校园无出网机**:靠校园里一台能出网的邻居当门——**subnet router**(`--advertise-routes` 广播网段,成员用内网 IP 直达,最省)或 **jump host**(SSH 层);想全内网自持则自建 **Headscale + 内网 DERP**。
+
+**真·已知缺口(还没落,别假装完备)**:
+1. **subnet router 未 first-class**:靠它打通的机现在算 `direct` 还是 `tailnet` 含糊,值得单独成一档或明确归属。
+2. **门(jump/subnet router)本身未作一等节点**:它是共享拓扑里的关键基建,图里没显式建模/可视化。
+3. **agent 节点**(按能力寻址)—— 北极星有,v2 建。
+4. **数据节点**(内容寻址 git-annex/DVC over tailnet)—— 北极星"一份数据也是节点",现在模型只有人/机两种切面,**无数据切面** —— v2。
+5. **认证演进**:现在 `authorized_keys` 下发(过渡);终态 Tailscale SSH / step-ca 短期证书。tier 抽象已就位,**切换路径未建**(刻意 v1→v2)。
+
 ## DeSci 用法(v2 出版/评审层,定稿别再重推)
 
 调研过 DeSci(去中心化学术生态:区块链 + DAO + 代币激励 + IPFS/Arweave)。结论:**它补的是我们北极星的另一半——出版/评审/资助层**(我们现在造的是织物/算力/身份层),互补不重叠。**只用它的数据层,存储/身份/信任全用我们自己的。** 一句话心智:**DeSci Codex 当「公地出口格式」,tailnet+git 当「私有/联邦存储」,信任永远走具名担责 + 裁判 agent。**
