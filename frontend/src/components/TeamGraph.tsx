@@ -290,7 +290,7 @@ export function TeamGraph({ view, me }: { view: TeamView; me?: string }) {
         <span><i className="d person" />人</span>
         <span><i className="d compute" />人+算力</span>
         <span><i className="d machine" />机器</span>
-        <span><i className="d gate" />门(网关/跳板)</span>
+        <span><svg className="d-diamond" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><polygon points="6,1 11,6 6,11 1,6" fill="none" stroke="var(--accent)" strokeWidth={2} /></svg>门(网关/跳板)</span>
         <span><i className="d me" />我</span>
         <span className="hint">悬停查看身份与授权</span>
       </div>
