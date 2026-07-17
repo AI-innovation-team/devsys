@@ -77,6 +77,8 @@ pub struct Device {
     pub transport: String,
     #[serde(default = "default_grants")]
     pub grants: BTreeMap<String, u8>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advertises: Vec<String>,
 }
 
 fn default_role() -> String {
@@ -115,6 +117,10 @@ pub struct Machine {
     // 缺省给 member=1（贡献时若没细分，至少让普通成员能用）。
     #[serde(default = "default_grants")]
     pub grants: BTreeMap<String, u8>,
+    // 它广播的子网 CIDR（非空 = 这台是 subnet router / 网关，替整个网段当门）。
+    // 校园那种「只能经它进内网」的场景:门是一等节点,网段内的机靠它可达。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advertises: Vec<String>,
 }
 
 fn default_port() -> u16 {
@@ -143,6 +149,8 @@ pub struct ViewMachine {
     // 这台是不是 owner 本人的设备（来自 member.device）。图里折进人节点;
     // acl/provision 一视同仁（自身设备也要下发/编 ACL，它就是一台算力）。
     pub is_self: bool,
+    // 广播的子网 CIDR（非空 = subnet router / 网关）。图里标成「门」。
+    pub advertises: Vec<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -231,6 +239,7 @@ pub fn merge(root: &TeamRoot, members: &[MemberFile]) -> TeamView {
                 grants: d.grants.clone(),
                 owner: mf.member.name.clone(),
                 is_self: true,
+                advertises: d.advertises.clone(),
             });
         }
         // 贡献的服务器（管但不是本人）。
@@ -245,6 +254,7 @@ pub fn merge(root: &TeamRoot, members: &[MemberFile]) -> TeamView {
                 grants: m.grants.clone(),
                 owner: mf.member.name.clone(),
                 is_self: false,
+                advertises: m.advertises.clone(),
             });
         }
     }
@@ -348,6 +358,7 @@ pub fn migrate_flat(text: &str) -> Option<(TeamRoot, Vec<MemberFile>)> {
             username: m.username,
             transport: m.transport,
             grants: BTreeMap::from([("member".into(), m.tier.max(1).min(2))]),
+            advertises: vec![],
         })
         .collect();
     // 每个旧成员成一份文件；机器挂在 owner 那份下。
@@ -500,6 +511,7 @@ machines:
             name: "gpu".into(), host: "10.0.0.1".into(), port: 22, jump: None,
             username: String::new(), transport: "direct".into(),
             grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1), ("pub".into(), 0)]),
+            advertises: vec![],
         });
         let bf = new_member_file("bob", "KB", "member");
         let df = new_member_file("dan", "KD", "pub");
@@ -524,11 +536,13 @@ machines:
             host: "100.64.0.11".into(), port: 22, jump: None,
             username: "alice".into(), transport: "tailnet".into(),
             grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
+            advertises: vec![],
         });
         upsert_machine(&mut af, Machine {
             name: "gpu".into(), host: "10.0.0.1".into(), port: 22, jump: None,
             username: String::new(), transport: "direct".into(),
             grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
+            advertises: vec![],
         });
         let v = merge(&root(), &[af]);
         // 两台算力节点:自身设备(is_self,名=alice)+ 服务器 gpu。
@@ -542,7 +556,7 @@ machines:
         // device 走 YAML 往返不丢。
         let back = parse_member(&member_to_yaml(&{
             let mut f = new_member_file("alice", "KA", "core");
-            f.member.device = Some(Device { host: "1.2.3.4".into(), port: 22, jump: None, username: String::new(), transport: "tailnet".into(), grants: BTreeMap::from([("member".into(), 1)]) });
+            f.member.device = Some(Device { host: "1.2.3.4".into(), port: 22, jump: None, username: String::new(), transport: "tailnet".into(), grants: BTreeMap::from([("member".into(), 1)]), advertises: vec![] });
             f
         }).unwrap()).unwrap();
         assert_eq!(back.member.device.unwrap().host, "1.2.3.4");
@@ -569,6 +583,7 @@ machines:
             name: "gpu".into(), host: h.into(), port: 22, jump: None,
             username: String::new(), transport: "direct".into(),
             grants: BTreeMap::from([("member".into(), 1)]),
+            advertises: vec![],
         };
         upsert_machine(&mut f, m("1.1.1.1"));
         upsert_machine(&mut f, m("2.2.2.2"));
@@ -585,6 +600,7 @@ machines:
             name: "gpu".into(), host: "10.0.0.5".into(), port: 2222,
             jump: Some("bastion".into()), username: "alice".into(), transport: "jump".into(),
             grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
+            advertises: vec![],
         });
         let back = parse_member(&member_to_yaml(&f).unwrap()).unwrap();
         assert_eq!(back.machines[0].port, 2222);

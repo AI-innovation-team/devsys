@@ -188,6 +188,7 @@ mod tests {
             name: "gpu".into(), host: "10.0.0.1".into(), port: 22, jump: None,
             username: String::new(), transport: "tailnet".into(),
             grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1), ("pub".into(), 0)]),
+            advertises: vec![],
         });
         let bf = new_member_file("bob", "KB", "member");
         let df = new_member_file("dan", "KD", "pub");
@@ -242,6 +243,7 @@ mod tests {
             name: "bastion".into(), host: "1.1.1.1".into(), port: 22, jump: None,
             username: String::new(), transport: "tailnet".into(),
             grants: BTreeMap::from([("member".into(), 0), ("core".into(), 0)]),
+            advertises: vec![],
         });
         let p = compile(&merge(&root(), &[af]));
         assert!(p.ssh.is_empty(), "全 grant=0 → 无 ssh 规则");

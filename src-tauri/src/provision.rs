@@ -220,6 +220,7 @@ mod tests {
                 upsert_machine(&mut f, Machine {
                     name: "gpu".into(), host: "10.0.0.1".into(), port: 22, jump: None,
                     username: String::new(), transport: "direct".into(), grants: g.clone(),
+                    advertises: vec![],
                 });
             }
             let _ = owner;

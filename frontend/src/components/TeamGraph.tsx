@@ -12,6 +12,7 @@ interface N {
   name: string;
   kind: "person" | "machine";
   compute: boolean; // 人节点:是否也是算力(共享了自身设备);机器节点恒 true
+  gate: boolean;    // 是不是「门」(subnet router 或被当跳板的机)
   me: boolean;      // 是不是「我」(当前登录身份)
   x: number;
   y: number;
@@ -24,6 +25,16 @@ interface E { a: string; b: string }
 // 一台算力节点在图里的目标 id:自身设备折进 owner 的人节点,服务器是独立机器节点。
 function target(mc: TeamView["machines"][number]): string {
   return mc.is_self ? `p:${mc.owner}` : `m:${mc.name}`;
+}
+
+// IPv4 是否落在某 CIDR 内(判断哪些机在 subnet router 广播的网段后面)。
+function ipInCidr(ip: string, cidr: string): boolean {
+  const [net, bitsStr] = cidr.split("/");
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip) || !net || !/^\d+\.\d+\.\d+\.\d+$/.test(net)) return false;
+  const bits = Math.min(32, Math.max(0, parseInt(bitsStr ?? "32", 10) || 0));
+  const toInt = (s: string) => s.split(".").reduce((a, o) => ((a << 8) + (parseInt(o, 10) || 0)) >>> 0, 0);
+  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+  return (toInt(ip) & mask) === (toInt(net) & mask);
 }
 
 function build(view: TeamView, me?: string): { nodes: N[]; edges: E[] } {
@@ -46,6 +57,19 @@ function build(view: TeamView, me?: string): { nodes: N[]; edges: E[] } {
   const reachersOf = (mc: TeamView["machines"][number]) =>
     view.members.filter((m) => m.name !== mc.owner && (mc.grants[m.role] ?? 0) > 0).map((m) => `${m.name}(档${mc.grants[m.role]})`);
 
+  // 门(网关):subnet router(广播了子网)或被别的机当跳板的机。第一等节点。
+  const jumpTargets = new Set(view.machines.map((m) => m.jump).filter(Boolean) as string[]);
+  const isGate = (mc: TeamView["machines"][number]) => (mc.advertises?.length ?? 0) > 0 || jumpTargets.has(mc.name);
+  // 一台机经哪道门可达:它的 jump 指向门,或它的 host 落在某门广播的网段内。
+  const gateOf = (mc: TeamView["machines"][number]): string | null => {
+    if (mc.jump && jumpTargets.has(mc.jump)) return mc.jump;
+    for (const g of view.machines) {
+      if (g.name === mc.name) continue;
+      if ((g.advertises ?? []).some((c) => ipInCidr(mc.host, c))) return g.name;
+    }
+    return null;
+  };
+
   // 人节点(含算力切面)
   for (const m of view.members) {
     const dev = selfDev.get(m.name);
@@ -62,18 +86,28 @@ function build(view: TeamView, me?: string): { nodes: N[]; edges: E[] } {
     const pos = place();
     const mine = isMe(m);
     nodes.push({
-      id: `p:${m.name}`, name: m.name, kind: "person", compute: !!dev, me: mine, ...pos, vx: 0, vy: 0,
+      id: `p:${m.name}`, name: m.name, kind: "person", compute: !!dev, gate: false, me: mine, ...pos, vx: 0, vy: 0,
       card: { title: mine ? `${m.name}（我）` : m.name, type: dev ? `人 · ${m.role} · 算力` : `人 · ${m.role}`, lines },
     });
   }
   // 服务器节点(独立算力,非本人)
   for (const mc of servers) {
     const reachers = reachersOf(mc);
+    const gate = isGate(mc);
+    const via = gateOf(mc);
     const lines: string[] = [];
+    if (gate && (mc.advertises?.length ?? 0) > 0) {
+      lines.push(`网关 · 广播 ${mc.advertises.join("、")}`);
+      const behind = servers.filter((s) => s.name !== mc.name && (mc.advertises ?? []).some((c) => ipInCidr(s.host, c)));
+      if (behind.length) lines.push(`${behind.length} 台经它可达: ${behind.map((s) => s.name).join("、")}`);
+    } else if (gate) {
+      lines.push("跳板 · 别的机经它进内网");
+    }
     if (mc.owner) lines.push(`属于 ${mc.owner}`);
+    if (via) lines.push(`经门 ${via} 可达`);
     lines.push(reachers.length ? `可进 ${reachers.join("、")}` : "无人可进");
     const pos = place();
-    nodes.push({ id: `m:${mc.name}`, name: mc.name, kind: "machine", compute: true, me: false, ...pos, vx: 0, vy: 0, card: { title: mc.name, type: `机器 · ${mc.host}`, lines } });
+    nodes.push({ id: `m:${mc.name}`, name: mc.name, kind: "machine", compute: true, gate, me: false, ...pos, vx: 0, vy: 0, card: { title: mc.name, type: gate ? `门 · ${mc.host}` : `机器 · ${mc.host}`, lines } });
     if (mc.owner) edges.push({ a: `p:${mc.owner}`, b: `m:${mc.name}` }); // 归属(自身设备无此边,已折进人)
   }
   // 授权边:每个算力节点 ← 能进它的人(自身设备的边指向 owner 人节点 = 人→人)。
@@ -201,6 +235,13 @@ export function TeamGraph({ view, me }: { view: TeamView; me?: string }) {
           ctx.beginPath(); ctx.arc(x, y, r + 2.4, 0, Math.PI * 2);
           ctx.strokeStyle = hexA(p.machine, dim ? 0.3 : 0.85); ctx.lineWidth = 2; ctx.stroke();
         }
+        // 「门」标记:subnet router / 跳板,外描一圈主色菱形(与圆环区分)= 一道进内网的门。
+        if (n.gate) {
+          const gr = r + 5;
+          ctx.beginPath();
+          ctx.moveTo(x, y - gr); ctx.lineTo(x + gr, y); ctx.lineTo(x, y + gr); ctx.lineTo(x - gr, y); ctx.closePath();
+          ctx.strokeStyle = hexA(p.dotHi, dim ? 0.3 : 0.9); ctx.lineWidth = 1.6; ctx.stroke();
+        }
         if (isFocus && strong) { ctx.shadowColor = hexA(base, 0.65); ctx.shadowBlur = 12; }
         ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fillStyle = dim ? hexA(base, 0.28) : base;
@@ -249,6 +290,7 @@ export function TeamGraph({ view, me }: { view: TeamView; me?: string }) {
         <span><i className="d person" />人</span>
         <span><i className="d compute" />人+算力</span>
         <span><i className="d machine" />机器</span>
+        <span><i className="d gate" />门(网关/跳板)</span>
         <span><i className="d me" />我</span>
         <span className="hint">悬停查看身份与授权</span>
       </div>

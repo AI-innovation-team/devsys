@@ -141,6 +141,7 @@ export interface TeamView {
     grants: Record<string, number>; // 角色 → 档位（RBAC）
     owner: string;                   // 贡献者
     is_self: boolean;                // 是不是 owner 本人的设备（图里折进人节点）
+    advertises: string[];            // 广播的子网 CIDR（非空 = subnet router / 网关 = 门）
   }[];
 }
 

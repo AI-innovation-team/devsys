@@ -458,6 +458,7 @@ fn to_machine(s: &store::Server, grants: std::collections::BTreeMap<String, u8>)
         username: s.username.clone(),
         transport: s.transport.clone(),
         grants,
+        advertises: vec![],
     }
 }
 

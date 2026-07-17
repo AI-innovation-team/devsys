@@ -169,6 +169,7 @@
 .tgraph-legend .d.compute { background: var(--success); box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--info); }
 .tgraph-legend .d.machine { background: var(--info); }
 .tgraph-legend .d.me { width: 12px; height: 12px; background: transparent; border: 2px solid var(--accent); }
+.tgraph-legend .d.gate { width: 11px; height: 11px; background: transparent; border: 2px solid var(--accent); border-radius: 2px; transform: rotate(45deg); }
 .tgraph-legend .hint { color: var(--text-faint); }
 
 /* RBAC 授权：每角色一档 */

@@ -81,6 +81,7 @@ fn full_sharing_loop() {
         name: "gpu-01".into(), host: "192.168.1.10".into(), port: 22, jump: None,
         username: String::new(), transport: "direct".into(),
         grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1), ("pub".into(), 0)]),
+        advertises: vec![],
     });
     write_member(&arepo, &alice);
 
@@ -162,12 +163,14 @@ fn shared_machine_with_jump_needs_its_jump() {
         name: "alice-mac".into(), host: "100.64.0.5".into(), port: 22, jump: None,
         username: String::new(), transport: "tailnet".into(),
         grants: BTreeMap::from([("core".into(), 0), ("member".into(), 0), ("pub".into(), 0)]),
+        advertises: vec![],
     });
     // 内网 GPU 经跳板到达
     team::upsert_machine(&mut alice, team::Machine {
         name: "gpu-inner".into(), host: "192.168.1.50".into(), port: 22,
         jump: Some("alice-mac".into()), username: String::new(), transport: "jump".into(),
         grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
+        advertises: vec![],
     });
     let view = team::merge(&root, &[alice]);
 
@@ -226,6 +229,7 @@ fn github_roster_folds_into_view() {
         name: "gpu".into(), host: "10.0.0.1".into(), port: 22, jump: None,
         username: String::new(), transport: "direct".into(),
         grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
+        advertises: vec![],
     });
     let mut v2 = team::merge(&root, &[alice]);
     team::fold_github(&mut v2, &cache);
