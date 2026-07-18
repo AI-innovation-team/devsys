@@ -66,15 +66,18 @@ assets/logo/     节点网 logo(light/dark)
 - **v1(配得起)**:团队配置(建团队/邀成员/按人授权)→ 把门户 admin 泛化成 `team.yaml`。数据面复用原生 SSH。**贡献侧**:机器加 `shared_to: [team:<名>]`,把拓扑 + 授权声明提交进 team.yaml(凭据不出本机),队友那侧落成只读节点 —— 与 v0 的消费侧合成闭环。见下「共享算力模型」。
 - **v2(长得开)**:自助贡献机器 + tailnet 织物 + 规格/负载登记 → 动态算力网;调度接 **SkyPilot**(见下);数据成网(内容寻址 git-annex/DVC over tailnet);持久 agent 托管 + 沙箱(见下);裁判 agent 评审 = 去中心化同行评阅;出版/评审层接 **DeSci**(见下「DeSci 用法」)。
 
-## 主页形态(方向,v1.5→v2,反复用到)
+## 主页形态(✅ 已落地,反复用到)
 
 主页 = **驾驶舱**,两半 + 一条缝合它们的核心交互:
 
-- **织物图 = 地图/导航**(左):现有 `TeamGraph`(力导向织物、节点=人/机/将来的 agent、org=无名包络、无特权中心=P2P、悬停出身份与授权、主色环标「我」)。回答「在哪、够得着谁」。这张图**很重要、大有可为**,是主页一等公民,不是装饰。
-- **工作区 = 工作面(网页版 tmux)**(右):多 pane、可持久的活会话。回答「正在干什么」。落在现有 `tmux.py`(会话封装)+ `ssh.rs` PTY + `Terminal.tsx`(xterm)上,不从零造。
-- **缝合 = 点节点→开 pane**:图是**启动器/导航器**不是只读画;在地图上点一个节点 → 工作区开出它的终端 pane。地图选位置,工作面出终端。
+- **织物图 = 地图/导航**(左,`Home.tsx` → `TeamGraph`):力导向织物、平等小圆点、悬停出身份与授权、主色环标「我」、门(网关/跳板)标菱形。**吃统一织物 `Fabric`**(`data.toFabric`:本地 store 服务器 ∪ 团队机,按 name 合并;name 即 `ssh_open` 连接键)——**没加载团队也能用**,只画本地机。回答「在哪、够得着谁」。是主页一等公民,不是装饰。
+- **工作区 = 工作面(网页版 tmux)**(右,`Workspace.tsx`):标签 + 可分屏(2-up),每 pane 一条独立会话。回答「正在干什么」。
+  - **铁律:非活动 pane 保持挂载、只 CSS 隐藏**(`.tpane.hidden`)——卸载会关掉会话、丢掉正在跑的活。
+  - `TermView.tsx` = 可内嵌终端核心(xterm+传输),满屏 `Terminal.tsx` 与 pane 共用。带 `ResizeObserver`:切标签/分屏不触发 window.resize;**隐藏时尺寸 0 要跳过 refit**,否则 xterm 算出畸形行列。
+- **缝合 = 点节点→开 pane**:图是**启动器/导航器**不是只读画。canvas click **自己做命中测试,不依赖 hover**(触屏无 hover,依赖 hover 就点不动)。机器/人+算力/门可连,纯消费的人节点不可连;连不上时说清原因(未入 store / 无凭据),不静默失败。
 - **北极星落地**:v2 持久 agent 上后,**agent 也是节点** —— 地图上是一个点、工作区里是一个 pane;于是人和 AI **共用同一张地图、同一个工作面**共事。「人与 AI 共治」第一次有了具体 UI 形态(一张织物上一起干活,不是两个工具)。
-- **时序**:v1 收口后才动。先留住这个方向。
+- **状态**:✅ 已落地并真机验过(点节点开出真实 SSH、多标签、分屏、关标签且隐藏期间不断线)。「主页」已是桌面默认落地页;拓扑图已从 Team 屏移来(Team 只留管理)。Servers 屏 SSH 仍走满屏 `Terminal` 老路。
+- **剩余(Phase E,未做)**:持久化(tmux-on-remote via `ws` + `lib.rs` 那个 `let _ = ws` 桩,跨重启重连)、可拖分隔条、>2 网格平铺、拖节点开 pane、agent/数据节点。
 
 ## 共享算力模型(v1→v2 定稿,反复用到)
 
@@ -117,4 +120,4 @@ assets/logo/     节点网 logo(light/dark)
 - **LabDAO**(P2P 算力/服务交易 Lab-Exchange):思路同源但绑生物信息+链上结算,**参考协议、不接底座**(我们走 tailnet+SkyPilot)。
 - **现在不写代码**:这是 v2,当前重心仍是 v1 共享算力闭环。v2 第一刀 = 定义 RO-Crate 研究对象 schema + `examples/` 范例对象。
 
-已完成(截至本轮):Tauri 阶段0–2(脚手架+传输抽象、本地拓扑/凭据、russh 原生 SSH 真连成功);Stronghold 保险库;登录门(密码=钥匙);SSH config 导入(读 ~/.ssh/config + 文件选择 + 带 IdentityFile 私钥导入);本地退出登录;**v0 三件事(纯本地解锁 / 按来源分组 / 连接团队入口)** + 清理废弃 creds.rs。
+已完成(截至本轮):Tauri 阶段0–2(脚手架+传输抽象、本地拓扑/凭据、russh 原生 SSH 真连成功);Stronghold 保险库;登录门(密码=钥匙);SSH config 导入(读 ~/.ssh/config + 文件选择 + 带 IdentityFile 私钥导入);本地退出登录;**v0 三件事(纯本地解锁 / 按来源分组 / 连接团队入口)** + 清理废弃 creds.rs;**对齐模型**(角色降为纯名字、tier 只在 grants、guest→pub);**切面模型**(人共享自身设备 = 人本身也是算力,`member.device` → merge 折成 is_self 机器);**离线「我」**(`local_identity`:内建 tsnet → 系统 tailscale → OS 用户,仅显示用);**多跳跳板链**(`store::jump_chain` 走链防环 + `ssh.rs` 嵌套 direct-tcpip);**subnet router 一等化 + 门作一等节点**(`advertises` CIDR);**主页驾驶舱**(织物图 + 工作区,点节点开 pane —— 见上「主页形态」)。
