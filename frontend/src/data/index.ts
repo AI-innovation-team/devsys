@@ -145,6 +145,78 @@ export interface TeamView {
   }[];
 }
 
+// ── 统一织物（驾驶舱地图的数据源）────────────────────────
+// 北极星「没有本地/远程之分，只有节点」：本地自持服务器与团队共享机在同一张图里。
+// 机器按 name 合并 —— store 服务器名 == 团队机名 == 成员设备名，这个 name 就是 ssh_open 的连接键。
+export interface FabricMachine {
+  name: string;                   // 连接键（ssh_open 按它解析）
+  host: string;
+  jump?: string | null;
+  transport?: string;
+  grants: Record<string, number>; // 团队授权（纯本地机为空）
+  owner: string;                  // 贡献者（纯本地机为空）
+  is_self: boolean;               // owner 本人的设备（图里折进人节点）
+  advertises: string[];           // 广播的子网（非空 = 门/网关）
+  source: string;                 // mine | team:<名>
+  connectable: boolean;           // 在本地 store 里 → ssh_open 能解析
+  has_secret: boolean;            // 已配凭据
+}
+export interface Fabric {
+  team: string;                   // 空 = 未加载团队（图里只有本地机）
+  roles: string[];
+  members: { name: string; identity: string; pubkey: string; role: string }[];
+  machines: FabricMachine[];
+}
+
+// 合成统一织物：本地 store 服务器 ∪ 团队视图机器（按 name 合并）。
+// 团队视图给 owner/grants/is_self/advertises；store 给可连性与真实传输方式。
+export function toFabric(servers: Server[], team?: TeamView | null): Fabric {
+  const byName = new Map(servers.map((s) => [s.name, s]));
+  const machines: FabricMachine[] = [];
+  const seen = new Set<string>();
+
+  for (const m of team?.machines ?? []) {
+    const s = byName.get(m.name);
+    seen.add(m.name);
+    machines.push({
+      name: m.name,
+      host: m.host,
+      jump: s?.jump ?? m.jump ?? null,
+      transport: s?.transport ?? m.transport,
+      grants: m.grants ?? {},
+      owner: m.owner,
+      is_self: m.is_self,
+      advertises: m.advertises ?? [],
+      source: s?.source ?? `team:${team?.team ?? ""}`,
+      connectable: !!s,             // 没进 store（没加载团队/重名跳过）→ 连不上
+      has_secret: !!s?.has_secret,
+    });
+  }
+  // 纯本地机（没在团队里）：孤立机器节点，无 owner/无 grants，照样可点连。
+  for (const s of servers) {
+    if (seen.has(s.name)) continue;
+    machines.push({
+      name: s.name,
+      host: s.host,
+      jump: s.jump ?? null,
+      transport: s.transport,
+      grants: {},
+      owner: "",
+      is_self: false,
+      advertises: [],
+      source: s.source ?? "mine",
+      connectable: true,
+      has_secret: s.has_secret,
+    });
+  }
+  return {
+    team: team?.team ?? "",
+    roles: team?.roles ?? [],
+    members: team?.members ?? [],
+    machines,
+  };
+}
+
 // 授权下发计划：要在被共享机上以 root 跑的脚本（先给人看，再执行）。
 export interface ProvisionAccount {
   name: string;

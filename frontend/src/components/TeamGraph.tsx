@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 
-import { type TeamView } from "../data";
+import { type Fabric } from "../data";
 
 // 团队拓扑图 = 一张织物网。北极星「没有本地/远程之分,只有节点」的画面。
 //   · 所有节点(人 / 机器)都是平等的小圆点 —— 类型不靠形状/颜色区分,悬停才展开。
@@ -23,7 +23,7 @@ interface N {
 interface E { a: string; b: string }
 
 // 一台算力节点在图里的目标 id:自身设备折进 owner 的人节点,服务器是独立机器节点。
-function target(mc: TeamView["machines"][number]): string {
+function target(mc: Fabric["machines"][number]): string {
   return mc.is_self ? `p:${mc.owner}` : `m:${mc.name}`;
 }
 
@@ -37,7 +37,7 @@ function ipInCidr(ip: string, cidr: string): boolean {
   return (toInt(ip) & mask) === (toInt(net) & mask);
 }
 
-function build(view: TeamView, me?: string): { nodes: N[]; edges: E[] } {
+function build(view: Fabric, me?: string): { nodes: N[]; edges: E[] } {
   // 「我」= 身份(SSO login)或账号名对得上的成员节点。
   const meKey = (me || "").trim().toLowerCase();
   const isMe = (m: { name: string; identity: string }) =>
@@ -54,14 +54,14 @@ function build(view: TeamView, me?: string): { nodes: N[]; edges: E[] } {
     k++;
     return { x: 0.5 + Math.cos(ang) * 0.28 + (Math.random() - 0.5) * 0.06, y: 0.5 + Math.sin(ang) * 0.28 + (Math.random() - 0.5) * 0.06 };
   };
-  const reachersOf = (mc: TeamView["machines"][number]) =>
+  const reachersOf = (mc: Fabric["machines"][number]) =>
     view.members.filter((m) => m.name !== mc.owner && (mc.grants[m.role] ?? 0) > 0).map((m) => `${m.name}(档${mc.grants[m.role]})`);
 
   // 门(网关):subnet router(广播了子网)或被别的机当跳板的机。第一等节点。
   const jumpTargets = new Set(view.machines.map((m) => m.jump).filter(Boolean) as string[]);
-  const isGate = (mc: TeamView["machines"][number]) => (mc.advertises?.length ?? 0) > 0 || jumpTargets.has(mc.name);
+  const isGate = (mc: Fabric["machines"][number]) => (mc.advertises?.length ?? 0) > 0 || jumpTargets.has(mc.name);
   // 一台机经哪道门可达:它的 jump 指向门,或它的 host 落在某门广播的网段内。
-  const gateOf = (mc: TeamView["machines"][number]): string | null => {
+  const gateOf = (mc: Fabric["machines"][number]): string | null => {
     if (mc.jump && jumpTargets.has(mc.jump)) return mc.jump;
     for (const g of view.machines) {
       if (g.name === mc.name) continue;
@@ -103,9 +103,13 @@ function build(view: TeamView, me?: string): { nodes: N[]; edges: E[] } {
     } else if (gate) {
       lines.push("跳板 · 别的机经它进内网");
     }
-    if (mc.owner) lines.push(`属于 ${mc.owner}`);
+    lines.push(mc.owner ? `属于 ${mc.owner}` : "本地节点(未入团队)");
     if (via) lines.push(`经门 ${via} 可达`);
-    lines.push(reachers.length ? `可进 ${reachers.join("、")}` : "无人可进");
+    if (mc.owner) lines.push(reachers.length ? `可进 ${reachers.join("、")}` : "无人可进");
+    // 可连性:点了能不能真开终端 —— 说清楚,别让点击静默失败。
+    if (!mc.connectable) lines.push("⚠ 未在本地拓扑(需先加载团队)");
+    else if (!mc.has_secret) lines.push("⚠ 未配凭据");
+    else lines.push("点击打开终端");
     const pos = place();
     nodes.push({ id: `m:${mc.name}`, name: mc.name, kind: "machine", compute: true, gate, me: false, ...pos, vx: 0, vy: 0, card: { title: mc.name, type: gate ? `门 · ${mc.host}` : `机器 · ${mc.host}`, lines } });
     if (mc.owner) edges.push({ a: `p:${mc.owner}`, b: `m:${mc.name}` }); // 归属(自身设备无此边,已折进人)
@@ -123,9 +127,12 @@ function build(view: TeamView, me?: string): { nodes: N[]; edges: E[] } {
   return { nodes, edges };
 }
 
-export function TeamGraph({ view, me }: { view: TeamView; me?: string }) {
+export function TeamGraph({ view, me, onOpen }: { view: Fabric; me?: string; onOpen?: (server: string) => void }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const hover = useRef<string | null>(null);
+  // 放 ref：父组件每次渲染都会新建回调，进 effect 依赖会重建整张图（力导向重新抖）。
+  const openRef = useRef(onOpen);
+  openRef.current = onOpen;
 
   const count = useMemo(() => view.members.length + view.machines.length, [view]);
   const height = Math.min(560, Math.max(300, 240 + count * 20));
@@ -266,21 +273,35 @@ export function TeamGraph({ view, me }: { view: TeamView; me?: string }) {
     };
     step();
 
-    const onMove = (ev: MouseEvent) => {
+    // 命中测试:光标 → 最近的节点。悬停与点击共用 —— 点击**不能**依赖 hover 状态,
+    // 否则触屏(无 hover)和合成点击都点不动。
+    const hit = (ev: MouseEvent): N | null => {
       const rect = canvas.getBoundingClientRect();
       const mx = (ev.clientX - rect.left) / rect.width, my = (ev.clientY - rect.top) / rect.height;
-      let best: string | null = null, bd = 0.045;
-      for (const n of nodes) { const d = Math.hypot(n.x - mx, n.y - my); if (d < bd) { bd = d; best = n.id; } }
-      if (best !== hover.current) { hover.current = best; settle = Math.min(settle, 280); if (!raf) step(); }
-      canvas.style.cursor = best ? "pointer" : "default";
+      let best: N | null = null, bd = 0.045;
+      for (const n of nodes) { const d = Math.hypot(n.x - mx, n.y - my); if (d < bd) { bd = d; best = n; } }
+      return best;
+    };
+    const onMove = (ev: MouseEvent) => {
+      const id = hit(ev)?.id ?? null;
+      if (id !== hover.current) { hover.current = id; settle = Math.min(settle, 280); if (!raf) step(); }
+      canvas.style.cursor = id ? "pointer" : "default";
     };
     canvas.addEventListener("mousemove", onMove);
+    // 点节点 → 开终端。图是**启动器**不是只读画:地图选位置,工作面出终端。
+    // 连接键 = node.name（机器节点=机器名;人+算力节点=成员名,正是其设备在 store 里的名字）。
+    const onClick = (ev: MouseEvent) => {
+      const n = hit(ev);
+      if (!n) return;
+      if (n.kind === "machine" || n.compute) openRef.current?.(n.name); // 纯消费的人节点不可连
+    };
+    canvas.addEventListener("click", onClick);
     const onLeave = () => { if (hover.current) { hover.current = null; settle = Math.min(settle, 280); if (!raf) step(); } };
     canvas.addEventListener("mouseleave", onLeave);
     const onResize = () => { resize(); settle = Math.min(settle, 260); if (!raf) step(); };
     window.addEventListener("resize", onResize);
 
-    return () => { cancelAnimationFrame(raf); canvas.removeEventListener("mousemove", onMove); canvas.removeEventListener("mouseleave", onLeave); window.removeEventListener("resize", onResize); };
+    return () => { cancelAnimationFrame(raf); canvas.removeEventListener("mousemove", onMove); canvas.removeEventListener("click", onClick); canvas.removeEventListener("mouseleave", onLeave); window.removeEventListener("resize", onResize); };
   }, [view, me]);
 
   return (

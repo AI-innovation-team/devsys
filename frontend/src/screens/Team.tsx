@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
 import { data, type AclPlan, type GitStatus, type TeamView } from "../data";
-import { TeamGraph } from "../components/TeamGraph";
 import { Icon } from "../icons";
 
 // 「团队」。一份共享 team.yaml = 成员公钥 + 共享机器（拓扑 + 开放档位），协调器极轻。
@@ -452,20 +451,6 @@ export function Team({
       )}
 
       {/* ③ 拓扑图：分文件 + RBAC 后数据天然成图 —— 谁把什么算力、以什么权限、给了谁 */}
-      {cfg && !creating && (cfg.machines.length > 0 || cfg.members.length > 1) && (
-        <article className="card open" style={{ marginTop: 16 }}>
-          <div className="cfg-head">
-            <div className="srv-title">
-              <span className="srv-name" style={{ fontSize: 17 }}>团队拓扑</span>
-              <span className="badge">{cfg.members.length} 人 · {cfg.machines.length} 机</span>
-            </div>
-          </div>
-          <div className="cfg-body">
-            <p className="acl-intro">谁把什么算力、以什么权限、给了谁 —— 悬停看细节。这就是团队的织物。</p>
-            <TeamGraph view={cfg} me={ident.login || localId.login || myName} />
-          </div>
-        </article>
-      )}
 
       {/* ④ 授权计划：RBAC → Tailscale ACL（终态；当前可先用「下发授权」走 authorized_keys） */}
       {plan && (

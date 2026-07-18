@@ -18,6 +18,7 @@ interface Props {
 }
 
 const NAV: { id: View; icon: string; label: string }[] = [
+  { id: "home", icon: "network", label: "主页" },
   { id: "workspaces", icon: "grid", label: "工作区" },
   { id: "servers", icon: "terminal", label: "服务器" },
   { id: "team", icon: "users", label: "连接团队" },
@@ -26,7 +27,7 @@ const NAV: { id: View; icon: string; label: string }[] = [
 
 export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggleTheme, user, isAdmin, local, onLogout, onDocs }: Props) {
   // 本地模式保留「服务器」+「连接团队」；工作区/文档是门户（在线模式）功能。
-  const nav = local ? NAV.filter((n) => n.id === "servers" || n.id === "team") : NAV;
+  const nav = local ? NAV.filter((n) => n.id === "home" || n.id === "servers" || n.id === "team") : NAV;
   const [menuOpen, setMenuOpen] = useState(false);
   const footRef = useRef<HTMLDivElement>(null);
 

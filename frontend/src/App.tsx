@@ -11,15 +11,16 @@ import { Servers } from "./screens/Servers";
 import { Settings } from "./screens/Settings";
 import { Team } from "./screens/Team";
 import { Terminal } from "./screens/Terminal";
+import { Home } from "./screens/Home";
 import { Workspaces } from "./screens/Workspaces";
 
-export type View = "workspaces" | "servers" | "team" | "docs" | "settings" | "admin";
+export type View = "home" | "workspaces" | "servers" | "team" | "docs" | "settings" | "admin";
 export type Theme = "light" | "dark";
 
-const VIEWS: View[] = ["workspaces", "servers", "team", "docs", "settings", "admin"];
+const VIEWS: View[] = ["home", "workspaces", "servers", "team", "docs", "settings", "admin"];
 
-// 自包含 app（tauri）无门户的工作区/文档/管理，默认落在「服务器」页。
-const LOCAL_VIEWS: View[] = ["servers", "team", "settings"];
+// 自包含 app（tauri）无门户的工作区/文档/管理，默认落在「主页」驾驶舱。
+const LOCAL_VIEWS: View[] = ["home", "servers", "team", "settings"];
 
 function restoreView(): View {
   if (isTauri) {
@@ -27,7 +28,7 @@ function restoreView(): View {
       const v = localStorage.getItem("devsys.view");
       if (v && LOCAL_VIEWS.includes(v as View)) return v as View;
     } catch {}
-    return "servers";
+    return "home";
   }
   try {
     const v = localStorage.getItem("devsys.view");
@@ -139,6 +140,7 @@ export function App() {
         onDocs={() => openDoc("")}
       />
       <main className="main">
+        {view === "home" && <Home teamPath={teamPath} servers={me?.servers ?? []} />}
         {view === "workspaces" && <Workspaces goSettings={() => setView("settings")} />}
         {view === "servers" && (
           <Servers
