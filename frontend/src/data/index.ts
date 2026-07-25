@@ -16,8 +16,36 @@ export interface ServerInput {
 }
 
 export interface VaultState {
-  exists: boolean; // 已建过保险库（有主密码）
+  exists: boolean; // 已建过保险库
   unlocked: boolean; // 本会话已解锁
+  legacy?: boolean; // 旧密码库，设备密钥开不动 → 需迁移
+}
+
+// GitHub 登录（device flow）状态。登录 = GitHub 身份，取代本地密码。
+export interface GhState {
+  logged_in: boolean;
+  login: string;      // GitHub 用户名
+  org: string;        // 选定的团队组织
+  configured: boolean; // 是否配了 OAuth App client_id
+}
+export interface GhDeviceStart {
+  device_code: string;
+  user_code: string;       // 给用户念/贴的短码
+  verification_uri: string; // 浏览器打开这里输码
+  verification_uri_complete: string; // 码已预填的直达链接（自动打开后只需点 Authorize）
+  interval: number;         // 轮询间隔（秒）
+  expires_in: number;
+}
+export interface GhPoll {
+  status: "pending" | "slow_down" | "ok" | "error";
+  login?: string;
+  orgs: string[];
+  error?: string;
+}
+export interface GhActivateResult {
+  path: string;            // team.yaml 路径（空 = 没建成）
+  org: string;
+  mode: "repo" | "local";  // repo=克隆到约定仓库 / local=仓库缺失，退化本地草稿（仅成员）
 }
 
 // ~/.ssh/config 解析出的一台可导入主机。
@@ -44,9 +72,31 @@ export interface DataSource {
   // 登录密码 = 保险库主密码（首次创建、之后解锁）。
   vaultState(): Promise<VaultState>;
   vaultUnlock(password: string): Promise<void>;
+  vaultAutoUnlock(): Promise<VaultState>; // 用设备密钥自动解锁（无需密码）
+  vaultMigrate(): Promise<void>;          // 迁移旧密码库（销毁旧凭据后设备密钥重建）
   vaultLock(): Promise<void>; // 退出登录（锁库）
   // 忘记密码的唯一出路：销毁保险库（凭据全丢，不可逆），拓扑保留。
   vaultReset(): Promise<void>;
+
+  // ── GitHub 登录（device flow）：登录 = GitHub 身份，本地不再验密码 ──
+  ghState(): Promise<GhState>;
+  ghDeviceStart(): Promise<GhDeviceStart>;    // 起 device flow，拿短码 + 授权 URL
+  ghDevicePoll(deviceCode: string): Promise<GhPoll>; // 轮询换 token
+  ghOrgs(): Promise<string[]>;                 // 列所属组织（切换团队用）
+  ghSetOrg(org: string): Promise<void>;        // 选定团队组织
+  // 选/切 org → 自动 clone 约定仓库 <org>/ait-team（或退化本地草稿）+ 同步花名册。
+  ghActivateOrg(org: string): Promise<GhActivateResult>;
+  // 为当前 org 生成团队仓库初始模板（team.yaml + members/.gitkeep + README + git init），返回 team.yaml 路径。
+  ghInitTeam(org: string): Promise<string>;
+  ghLogout(): Promise<void>;                   // 退出 GitHub 登录
+  ghAuthorizeUrl(): Promise<string>;           // 本 app 的 GitHub 授权管理页（Grant/Request org 访问）
+  ghNewRepoUrl(org: string): Promise<string>;  // GitHub 新建仓库页（org + ait-team + private 预填）
+  ghPushTeam(org: string, path: string): Promise<string>; // 连上约定远程 <org>/ait-team 并推送
+  openUrl(url: string): Promise<void>;         // 用系统浏览器打开链接（GitHub 授权页）
+
+  // ── 织物图状态源 ──
+  sshActive(): Promise<string[]>;              // 有活 SSH 会话的服务器名(增量靠 ssh://active 事件)
+  probeReach(): Promise<Record<string, boolean>>; // TCP 摸每台机的入口:可达/不可达
   getUsername(): Promise<string>;
   setUsername(name: string): Promise<void>;
   // 解析 SSH config（path 空=默认 ~/.ssh/config）。仅 tauri。
@@ -57,6 +107,8 @@ export interface DataSource {
   pickSshConfigFile(): Promise<string | null>;
   // 加载 team.yaml：团队共享机作为只读节点（source=team:<名>）合并进列表。仅 tauri。
   loadTeam(path: string): Promise<LoadTeamResult>;
+  // 无活跃团队时清掉所有 team:* 机器（单活跃团队不变量的兜底）。仅 tauri。
+  pruneTeamSources(): Promise<void>;
   // 打开文件选择器选一个 team.yaml，返回路径（取消返回 null）。
   pickTeamFile(): Promise<string | null>;
   // 把 team.yaml 的 tier 档位编译成 Tailscale ACL 计划（只产出计划，不改 tailnet）。
@@ -71,7 +123,7 @@ export interface DataSource {
   createTeam(path: string, teamName: string, member: string, pubkey: string, role?: string): Promise<void>;
   addMember(path: string, name: string, pubkey: string, role?: string, identity?: string): Promise<TeamView>;
   // grants = 角色→档位（RBAC）；member = 我是谁（写进我的 members/<我>.yaml）
-  shareServer(teamPath: string, member: string, server: string, grants: Record<string, number>): Promise<Server[]>;
+  shareServer(teamPath: string, member: string, server: string, grants: Record<string, number>, sharing?: Sharing | null): Promise<Server[]>;
   unshareServer(teamPath: string, member: string, server: string): Promise<Server[]>;
   myPubkeys(): Promise<string[]>; // 本机 ~/.ssh/*.pub（登记自己时用）
   pickTeamSavePath(): Promise<string | null>; // 新建 team.yaml 的另存为
@@ -80,7 +132,8 @@ export interface DataSource {
 
   // ── 内建 tailnet（tsnet sidecar）：零系统依赖的 tailnet 节点 ──
   tailnetStatus(): Promise<TailnetStatus>;
-  tailnetUp(authkey: string, ingress: boolean): Promise<void>;
+  // control 空 = 官方 Tailscale;填团队 Headscale URL = 接入团队自持网。
+  tailnetUp(authkey: string, ingress: boolean, control?: string): Promise<void>;
   tailnetDown(): Promise<void>;
   // 验证过的团队身份（来自 tailnet SSO 登录）。login 为空 = 未连/未登录。
   tailnetIdentity(): Promise<{ login: string; display: string; name: string }>;
@@ -133,6 +186,7 @@ export interface SelfNode {
 // 合并视图：team.yaml + members/*.yaml 合并出的统一结构（也是拓扑图数据源）。
 export interface TeamView {
   team: string;
+  tailnet?: string; // 团队声明的 tailnet（可达性地基；管理员在 team.yaml 填）
   roles: string[]; // 纯角色名（无 tier）—— tier 只在 machine.grants
   members: { name: string; identity: string; pubkey: string; role: string }[];
   machines: {
@@ -142,6 +196,7 @@ export interface TeamView {
     owner: string;                   // 贡献者
     is_self: boolean;                // 是不是 owner 本人的设备（图里折进人节点）
     advertises: string[];            // 广播的子网 CIDR（非空 = subnet router / 网关 = 门）
+    sharing: Sharing;                // 档位怎么兑现（裸机账号 / 一人一容器 + 上限 + 数据集）
   }[];
 }
 
@@ -168,12 +223,24 @@ export interface Fabric {
   machines: FabricMachine[];
 }
 
+// 本机节点的保留名(与 Rust localpty::LOCAL_NODE 一致)。点它开本地 PTY,不走 SSH。
+export const LOCAL_NODE = "~local";
+
 // 合成统一织物：本地 store 服务器 ∪ 团队视图机器（按 name 合并）。
 // 团队视图给 owner/grants/is_self/advertises；store 给可连性与真实传输方式。
 export function toFabric(servers: Server[], team?: TeamView | null): Fabric {
   const byName = new Map(servers.map((s) => [s.name, s]));
   const machines: FabricMachine[] = [];
   const seen = new Set<string>();
+
+  // 本机也是节点(仅桌面):恒可达、恒可点 —— 点开是本地 PTY 终端。
+  if (isTauri) {
+    machines.push({
+      name: LOCAL_NODE, host: "本地终端", jump: null, transport: "local",
+      grants: {}, owner: "", is_self: false, advertises: [],
+      source: "local", connectable: true, has_secret: true,
+    });
+  }
 
   for (const m of team?.machines ?? []) {
     const s = byName.get(m.name);
@@ -217,12 +284,36 @@ export function toFabric(servers: Server[], team?: TeamView | null): Fabric {
   };
 }
 
+// ── 档位的兑现方式（v2：一人一容器）──────────────────────
+// 「档」= 开多少权（grants）与「容器」= 怎么关（sharing），两者**正交**：
+// 改隔离方式不动 grants，反之亦然。
+export interface ShareLimit {
+  cpus?: number | null; // CPU 核数（可小数）
+  mem?: string;         // "32g" / "4096m"
+  gpus?: string;        // "all" / "2" / "device=0,1"（GPU 不受 cgroup 父池约束）
+}
+export interface ShareDataset {
+  host: string;   // 宿主上的路径
+  as?: string;    // 容器内路径（空 = 同 host）
+  mode?: string;  // ro（默认）| rw
+}
+export interface Sharing {
+  isolation: "account" | "container";
+  image?: string;             // 空 = 用 app 现建的 devsys/base（带 tmux）
+  limit?: ShareLimit | null;  // 主人的借出上限 → 父 cgroup 池
+  data?: ShareDataset[];      // 点名只读挂进来的数据集
+}
+export const DEFAULT_SHARING: Sharing = { isolation: "account", image: "", limit: null, data: [] };
+
 // 授权下发计划：要在被共享机上以 root 跑的脚本（先给人看，再执行）。
 export interface ProvisionAccount {
   name: string;
   role: string;
   tier: number;
   sudo: boolean;
+  mode: "forward" | "account" | "container"; // 这个人怎么被兑现
+  container?: string;                         // 他的容器名（容器模式）
+  limits?: string;                            // 限额人话
 }
 export interface ProvisionPlan {
   server: string;
@@ -230,6 +321,9 @@ export interface ProvisionPlan {
   any_sudo: boolean;
   script: string;
   warnings: string[];
+  isolation: "account" | "container";
+  pool: string;        // 借出资源池（父 cgroup）人话；空 = 没设上限
+  datasets: string[];  // 只读挂进容器的共享数据集
 }
 
 export interface ProvisionResult {

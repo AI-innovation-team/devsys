@@ -72,6 +72,36 @@ impl Vault {
         Ok(salt.to_vec())
     }
 
+    // 设备主密钥（保险库的钥匙，取代登录密码）：从 OS 钥匙串取；没有就随机生成 32 字节、
+    // 十六进制存进钥匙串。登录改走 GitHub，本地不再问密码 —— app 启动即用它自动解锁。
+    fn device_password(&self) -> Result<String, String> {
+        if let Some(k) = crate::keychain::get(&self.dir, "vault-master") {
+            return Ok(k);
+        }
+        let mut raw = [0u8; 32];
+        getrandom::getrandom(&mut raw).map_err(e2s)?;
+        let hex: String = raw.iter().map(|b| format!("{b:02x}")).collect();
+        crate::keychain::set(&self.dir, "vault-master", &hex)?;
+        Ok(hex)
+    }
+
+    // 自动解锁:用设备密钥开库(无需人输密码)。返回 Err("VAULT_LEGACY") 表示存在一份用
+    // 旧登录密码建的库、设备密钥开不动 —— 上层据此提示迁移(reset 后重建,旧凭据作废)。
+    pub fn unlock_device(&self) -> Result<(), String> {
+        let key = self.device_password()?;
+        let had = self.exists();
+        match self.unlock(&key) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if had {
+                    Err("VAULT_LEGACY".into())
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
     fn derive(&self, password: &str) -> Result<Vec<u8>, String> {
         let salt = self.salt()?;
         let mut key = vec![0u8; 32];

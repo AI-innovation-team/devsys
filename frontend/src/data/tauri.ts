@@ -49,15 +49,79 @@ export const tauriData: DataSource = {
   },
 
   vaultState() {
-    return invoke("vault_state") as Promise<{ exists: boolean; unlocked: boolean }>;
+    return invoke("vault_state") as Promise<import("./index").VaultState>;
   },
 
   async vaultUnlock(password: string): Promise<void> {
     await invoke("vault_unlock", { password });
   },
 
+  vaultAutoUnlock() {
+    return invoke("vault_auto_unlock") as Promise<import("./index").VaultState>;
+  },
+
+  async vaultMigrate(): Promise<void> {
+    await invoke("vault_migrate");
+  },
+
   async vaultReset(): Promise<void> {
     await invoke("vault_reset");
+  },
+
+  ghState() {
+    return invoke("gh_state") as Promise<import("./index").GhState>;
+  },
+
+  ghDeviceStart() {
+    return invoke("gh_device_start") as Promise<import("./index").GhDeviceStart>;
+  },
+
+  ghDevicePoll(deviceCode: string) {
+    return invoke("gh_device_poll", { deviceCode }) as Promise<import("./index").GhPoll>;
+  },
+
+  ghOrgs() {
+    return invoke("gh_orgs") as Promise<string[]>;
+  },
+
+  async ghSetOrg(org: string): Promise<void> {
+    await invoke("gh_set_org", { org });
+  },
+
+  ghActivateOrg(org: string) {
+    return invoke("gh_activate_org", { org }) as Promise<import("./index").GhActivateResult>;
+  },
+
+  ghInitTeam(org: string) {
+    return invoke("gh_init_team", { org }) as Promise<string>;
+  },
+
+  async ghLogout(): Promise<void> {
+    await invoke("gh_logout");
+  },
+
+  ghAuthorizeUrl() {
+    return invoke("gh_authorize_url") as Promise<string>;
+  },
+
+  ghNewRepoUrl(org: string) {
+    return invoke("gh_new_repo_url", { org }) as Promise<string>;
+  },
+
+  ghPushTeam(org: string, path: string) {
+    return invoke("gh_push_team", { org, path }) as Promise<string>;
+  },
+
+  async openUrl(url: string): Promise<void> {
+    await invoke("open_url", { url });
+  },
+
+  sshActive() {
+    return invoke("ssh_active") as Promise<string[]>;
+  },
+
+  probeReach() {
+    return invoke("probe_reach") as Promise<Record<string, boolean>>;
   },
 
   readSshConfig(path?: string) {
@@ -84,6 +148,10 @@ export const tauriData: DataSource = {
     return invoke("load_team", { path }) as Promise<import("./index").LoadTeamResult>;
   },
 
+  async pruneTeamSources(): Promise<void> {
+    await invoke("prune_team_sources");
+  },
+
   compileAcl(path: string) {
     return invoke("compile_acl", { path }) as Promise<import("./index").AclPlan>;
   },
@@ -108,8 +176,14 @@ export const tauriData: DataSource = {
     return invoke("add_member", { path, name, pubkey, role: role ?? null, identity: identity ?? null }) as Promise<import("./index").TeamView>;
   },
 
-  shareServer(teamPath: string, member: string, server: string, grants: Record<string, number>) {
-    return invoke("share_server", { teamPath, member, server, grants }) as Promise<Server[]>;
+  shareServer(
+    teamPath: string,
+    member: string,
+    server: string,
+    grants: Record<string, number>,
+    sharing?: import("./index").Sharing | null,
+  ) {
+    return invoke("share_server", { teamPath, member, server, grants, sharing: sharing ?? null }) as Promise<Server[]>;
   },
 
   unshareServer(teamPath: string, member: string, server: string) {
@@ -128,8 +202,8 @@ export const tauriData: DataSource = {
     return invoke("tailnet_status") as Promise<import("./index").TailnetStatus>;
   },
 
-  async tailnetUp(authkey: string, ingress: boolean): Promise<void> {
-    await invoke("tailnet_up", { authkey: authkey || null, ingress });
+  async tailnetUp(authkey: string, ingress: boolean, control?: string): Promise<void> {
+    await invoke("tailnet_up", { authkey: authkey || null, ingress, control: control || null });
   },
 
   async tailnetDown(): Promise<void> {

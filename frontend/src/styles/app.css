@@ -54,6 +54,10 @@
 .menu-sep { height: 1px; background: var(--border-subtle); margin: 5px 6px; }
 
 .main { flex: 1; overflow-y: auto; min-width: 0; }
+/* 旧保险库迁移提示：固定顶栏，不参与内容布局（否则会被满高的驾驶舱挤掉）。 */
+.vault-migrate { position: fixed; top: 0; left: 0; right: 0; z-index: 60; display: flex; align-items: center; justify-content: center; gap: 14px; padding: 9px 16px; font-size: 12.5px; color: var(--text-body); background: var(--warning-soft); border-bottom: 1px solid var(--accent-soft-bd); }
+.vault-migrate button { flex: 0 0 auto; font-family: inherit; font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 7px; border: 1px solid var(--accent-soft-bd); background: var(--accent); color: #fff; cursor: pointer; }
+.vault-migrate button:disabled { opacity: .6; cursor: default; }
 .wrap { max-width: 900px; margin: 0 auto; padding: 40px 34px 64px; }
 .page-head { margin-bottom: 28px; }
 .page-head h1 { font-size: 32px; margin-top: 8px; letter-spacing: -.02em; }
@@ -147,6 +151,38 @@
 .git-bar .btn { margin-left: auto; }
 .git-bar .btn + .btn { margin-left: 0; }
 .git-log { margin: 10px 0 0; padding: 10px 12px; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55; color: var(--text-muted); background: var(--surface-sunken); border: 1px solid var(--border-subtle); border-radius: 8px; overflow-x: auto; white-space: pre-wrap; }
+.sync-note { margin-top: 8px; padding: 8px 11px; font-size: 12px; line-height: 1.5; color: var(--text-muted); background: var(--surface-sunken); border: 1px solid var(--border-subtle); border-radius: 8px; }
+.git-connect { margin-top: 12px; padding: 12px 13px; background: var(--surface-sunken); border: 1px solid var(--accent-soft-bd); border-radius: 10px; }
+.git-connect-hd { font-size: 12.5px; line-height: 1.55; color: var(--text-body); }
+.git-connect-hd code { font-family: var(--font-mono); font-size: 11px; padding: 1px 5px; border-radius: 5px; background: var(--surface-hover); color: var(--accent-text); }
+.git-connect-row { display: flex; gap: 8px; margin-top: 10px; }
+.git-connect-tip { margin-top: 8px; font-size: 11px; line-height: 1.5; color: var(--text-faint); }
+
+/* GitHub 组织 = 团队：当前组织条 + 切换列表 + 仓库缺失提示 */
+.org-bar { display: flex; align-items: center; gap: 12px; padding: 11px 13px; background: var(--surface-sunken); border: 1px solid var(--border-subtle); border-radius: 10px; }
+.org-cur { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.org-cur .ic { width: 18px; height: 18px; color: var(--accent); flex-shrink: 0; }
+.org-name { font-size: 15px; font-weight: 600; color: var(--text-body); }
+.org-sub { font-size: 11.5px; color: var(--text-faint); }
+.org-sub code, .org-hint code { font-family: var(--font-mono); font-size: 11px; padding: 1px 5px; border-radius: 5px; background: var(--surface-hover); color: var(--accent-text); }
+.org-bar .btn { margin-left: auto; flex-shrink: 0; }
+.org-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding: 8px; background: var(--surface-sunken); border: 1px solid var(--border-subtle); border-radius: 10px; }
+.org-opt { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; font-family: inherit; font-size: 13.5px; color: var(--text-body); background: var(--surface); border: 1px solid var(--border-subtle); border-radius: 8px; cursor: pointer; text-align: left; }
+.org-opt:hover { background: var(--accent-soft); border-color: var(--accent-soft-bd); color: var(--accent-text); }
+.org-opt.on { border-color: var(--accent-soft-bd); color: var(--accent-text); font-weight: 600; }
+.org-opt .ic { width: 15px; height: 15px; flex-shrink: 0; }
+.org-empty { font-size: 12px; line-height: 1.55; color: var(--text-faint); padding: 6px 4px; }
+.org-manual { display: flex; gap: 6px; margin-top: 2px; }
+.org-manual input { flex: 1; min-width: 0; height: 34px; padding: 0 10px; font-family: inherit; font-size: 13px; color: var(--text-body); background: var(--surface); border: 1px solid var(--border-subtle); border-radius: 8px; }
+.org-manual input:focus { outline: none; border-color: var(--accent-soft-bd); }
+.org-manual .btn { flex-shrink: 0; }
+.org-authlink { align-self: flex-start; margin-top: 2px; padding: 2px 0; font-family: inherit; font-size: 11.5px; color: var(--text-faint); background: none; border: none; cursor: pointer; }
+.org-authlink:hover { color: var(--accent); }
+.org-hint { margin-top: 10px; padding: 10px 12px; font-size: 12.5px; line-height: 1.6; color: var(--warning-text); background: var(--warning-soft); border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent); border-radius: 9px; }
+.org-hint b { font-weight: 600; }
+.team-adv { margin-top: 12px; }
+.team-adv summary { font-size: 12px; color: var(--text-faint); cursor: pointer; user-select: none; }
+.team-adv summary:hover { color: var(--text-muted); }
 
 /* 身份条（团队操作绑定 SSO 身份） */
 .ident-bar { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 16px; padding: 11px 14px; font-size: 13px; line-height: 1.55; border-radius: 10px; background: var(--warning-soft); color: var(--warning-text); border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent); }
@@ -170,6 +206,12 @@
 .tgraph-legend .d.machine { background: var(--info); }
 .tgraph-legend .d.me { width: 12px; height: 12px; background: transparent; border: 2px solid var(--accent); }
 .tgraph-legend .d-diamond { display: block; flex-shrink: 0; }
+/* 状态图例:已连接=常亮辉光 · 可达=呼吸脉冲 · 不可达=灰 */
+.tgraph-legend .sep { width: 1px; height: 14px; background: var(--border-subtle); }
+.tgraph-legend .d.st-on { background: var(--info); box-shadow: 0 0 0 2px var(--surface), 0 0 6px 1px var(--success); }
+.tgraph-legend .d.st-up { background: var(--info); animation: tgPulse 1.6s ease-in-out infinite; }
+.tgraph-legend .d.st-down { background: var(--border-strong); }
+@keyframes tgPulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent); } 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 0%, transparent); } }
 .tgraph-legend .hint { color: var(--text-faint); }
 
 /* 主页驾驶舱：左「织物图」= 地图/导航，右「工作区」= 工作面。点节点 → 右侧开 pane。 */
@@ -177,18 +219,17 @@
 /* 驾驶舱自管滚动（左图滚、右工作面不滚），别让外层 .main 再套一层滚动条。 */
 .main:has(.cockpit) { overflow: hidden; }
 .cockpit-graph { flex: 0 0 42%; min-width: 320px; max-width: 620px; display: flex; flex-direction: column; padding: 16px 14px; overflow-y: auto; border-right: 1px solid var(--border-subtle); }
-.cockpit-workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--surface-sunken); }
+/* 主页现在只放织物图：全宽铺满，没有右侧工作面（工作面移到侧栏「工作区」）。 */
+.cockpit.solo .cockpit-graph { flex: 1; max-width: none; border-right: none; padding: 18px 22px; }
+/* 桌面「工作区」常驻挂载：切走只隐藏、绝不卸载（否则会关掉所有活会话）。 */
+.ws-host { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.ws-host.hidden { display: none; }
+.main:has(.ws-host:not(.hidden)) { overflow: hidden; }
 .cockpit-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
 .cockpit-head h2 { font-size: 16px; }
 .cockpit-head .hint { font-size: 12px; color: var(--text-faint); }
 .cockpit-blank, .cockpit-note { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
 .cockpit-note { margin-top: 10px; padding: 9px 11px; border-radius: 8px; background: var(--warning-soft); border: 1px solid var(--accent-soft-bd); color: var(--text-body); }
-/* 窄屏：上下堆叠，图在上、工作面在下。 */
-@media (max-width: 900px) {
-  .cockpit { flex-direction: column; }
-  .cockpit-graph { flex: 0 0 auto; max-width: none; border-right: none; border-bottom: 1px solid var(--border-subtle); }
-  .cockpit-workspace { flex: 1; min-height: 320px; }
-}
 
 /* 工作区（驾驶舱右半）：标签条 + 面板区。非活动 pane 保持挂载、只隐藏（见 .tpane.hidden）。 */
 .wsp { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; }
@@ -208,6 +249,10 @@
 .wsp-split:hover { background: var(--surface-hover); color: var(--text-body); }
 .wsp-split.on { background: var(--accent-soft); border-color: var(--accent-soft-bd); color: var(--accent-text); }
 .wsp-split .ic { width: 14px; height: 14px; }
+/* 「再开一个」：紧跟标签，不抢 .wsp-split 的靠右位 */
+.wsp-new { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 7px; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; }
+.wsp-new:hover { background: var(--surface-hover); color: var(--text-body); border-color: var(--border-subtle); }
+.wsp-new .ic { width: 14px; height: 14px; }
 .wsp-body { flex: 1; min-height: 0; display: flex; gap: 10px; padding: 10px; }
 .wsp-empty { margin: auto; font-size: 13px; color: var(--text-faint); text-align: center; padding: 24px; }
 
@@ -217,6 +262,27 @@
 .grant-role { font-size: 13px; font-weight: 600; color: var(--text-strong); min-width: 66px; font-family: var(--font-mono); }
 .seg.sm { padding: 2px; }
 .seg.sm button { height: 28px; padding: 0 11px; font-size: 12px; }
+/* 档位的兑现方式：裸机账号 / 一人一容器（+ 借出上限、共享数据集） */
+.iso-t { margin-top: 16px; }
+.iso-seg { margin-top: 8px; width: fit-content; }
+.iso-hint { margin-top: 8px; font-size: 12.5px; line-height: 1.6; color: var(--text-muted); }
+.iso-hint strong { color: var(--text-strong); font-weight: 600; }
+.iso-box {
+  margin-top: 12px; padding: 14px; border: 1px solid var(--border-subtle);
+  border-radius: 10px; background: var(--surface); display: flex; flex-direction: column; gap: 10px;
+}
+.iso-fields { display: flex; gap: 8px; flex: 1; align-items: center; flex-wrap: wrap; }
+.iso-fields input {
+  flex: 1; min-width: 128px; height: 30px; padding: 0 10px; font-size: 12.5px;
+  color: var(--text-strong); background: var(--surface-sunken);
+  border: 1px solid var(--border); border-radius: 7px;
+}
+.iso-fields input:focus { outline: none; border-color: var(--accent); }
+.iso-note { font-size: 11.5px; line-height: 1.6; color: var(--text-faint); }
+.iso-note strong { color: var(--text-muted); font-weight: 600; }
+.prov-pool { font-size: 12.5px; line-height: 1.6; color: var(--text-muted); }
+.prov-pool strong { color: var(--text-strong); font-family: var(--font-mono); }
+
 .role-tag { font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px; letter-spacing: .02em; }
 .role-tag.core { background: var(--accent-soft); color: var(--accent-text); border: 1px solid var(--accent-soft-bd); }
 .role-tag.member { background: var(--success-soft); color: var(--success-text); }
@@ -596,6 +662,27 @@ code { font-family: var(--font-mono); font-size: .9em; background: var(--surface
 .gate-err { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 10px 13px; font-size: 13.5px; font-weight: 600; color: var(--danger); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 34%, transparent); border-radius: 10px; animation: gateShake .42s cubic-bezier(.36,.07,.19,.97); }
 @keyframes gateShake { 10%,90% { transform: translateX(-1px); } 20%,80% { transform: translateX(2px); } 30%,50%,70% { transform: translateX(-4px); } 40%,60% { transform: translateX(4px); } }
 .gate-foot { margin-top: 22px; font-size: 12px; color: var(--text-faint); text-align: center; }
+
+/* GitHub 登录门（device flow） */
+.gate-hint { font-size: 12.5px; line-height: 1.65; color: var(--text-muted); text-align: left; padding: 12px 14px; border: 1px solid var(--border-subtle); background: var(--surface-sunken); border-radius: 10px; }
+.gate-hint b { color: var(--text-body); font-weight: 600; }
+.gate-hint code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; padding: 1px 5px; border-radius: 5px; background: var(--surface-hover); color: var(--accent-text); }
+.gate-dev { width: 100%; display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--border-subtle); background: var(--surface-sunken); border-radius: 12px; }
+.gate-dev-step { margin: 0; font-size: 12.5px; color: var(--text-muted); text-align: left; }
+.gate-dev-step b { color: var(--text-body); font-weight: 600; }
+.gate-mini { margin-left: 8px; font-family: inherit; font-size: 11px; padding: 1px 7px; border-radius: 6px; border: 1px solid var(--border-subtle); background: var(--surface); color: var(--text-muted); cursor: pointer; }
+.gate-mini:hover { color: var(--accent); border-color: var(--accent-soft-bd); }
+.gate-code { align-self: stretch; text-align: center; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 26px; font-weight: 700; letter-spacing: 6px; padding: 10px; border-radius: 10px; background: var(--surface); border: 1px dashed var(--accent-soft-bd); color: var(--accent-text); cursor: pointer; user-select: all; }
+.gate-dev-wait { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 0; font-size: 13px; color: var(--text-body); }
+.gate-dev-wait b { color: var(--accent-text); font-weight: 700; }
+.gate-reopen { align-self: center; }
+.gate-dev-fallback { margin: 6px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--text-faint); text-align: left; }
+.gate-dev-fallback b { color: var(--text-muted); font-weight: 600; }
+.spin { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--border-subtle); border-top-color: var(--accent); animation: gateSpin .8s linear infinite; }
+@keyframes gateSpin { to { transform: rotate(360deg); } }
+.gate-orgs { width: 100%; display: flex; flex-direction: column; gap: 8px; }
+.gate-org { width: 100%; height: 42px; font-family: inherit; font-size: 14px; font-weight: 600; color: var(--text-body); background: var(--surface-sunken); border: 1px solid var(--border-subtle); border-radius: 10px; cursor: pointer; transition: background .12s, border-color .12s; }
+.gate-org:hover { background: var(--accent-soft); border-color: var(--accent-soft-bd); color: var(--accent-text); }
 
 /* 忘记密码 → 重置保险库（唯一出路；代价必须显式告知） */
 .gate-link { margin-top: 14px; padding: 4px 6px; font-family: inherit; font-size: 12.5px; color: var(--text-faint); background: none; border: none; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; transition: color .15s; }

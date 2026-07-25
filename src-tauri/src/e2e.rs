@@ -82,6 +82,7 @@ fn full_sharing_loop() {
         username: String::new(), transport: "direct".into(),
         grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1), ("pub".into(), 0)]),
         advertises: vec![],
+        sharing: Default::default(),
     });
     write_member(&arepo, &alice);
 
@@ -164,6 +165,7 @@ fn shared_machine_with_jump_needs_its_jump() {
         username: String::new(), transport: "tailnet".into(),
         grants: BTreeMap::from([("core".into(), 0), ("member".into(), 0), ("pub".into(), 0)]),
         advertises: vec![],
+        sharing: Default::default(),
     });
     // 内网 GPU 经跳板到达
     team::upsert_machine(&mut alice, team::Machine {
@@ -171,6 +173,7 @@ fn shared_machine_with_jump_needs_its_jump() {
         jump: Some("alice-mac".into()), username: String::new(), transport: "jump".into(),
         grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
         advertises: vec![],
+        sharing: Default::default(),
     });
     let view = team::merge(&root, &[alice]);
 
@@ -181,9 +184,11 @@ fn shared_machine_with_jump_needs_its_jump() {
             assert!(names.contains(&j.as_str()), "{} 的跳板 {} 缺失", m.name, j);
         }
     }
-    // 跳板全 grant=0 → 授权脚本不建账号，ACL 不开 --ssh
+    // 跳板全 grant=0 → 只建「仅转发」账号（ProxyJump 得能认证，但拿不到 shell），ACL 不开 --ssh
     let p = provision::plan(&view, "alice-mac").unwrap();
-    assert!(p.accounts.is_empty());
+    assert!(p.accounts.iter().all(|a| a.mode == "forward" && a.tier == 0 && !a.sudo));
+    assert!(p.script.contains("restrict,port-forwarding"));
+    assert!(!p.script.contains("-s /bin/bash"), "档0 不给任何人 shell");
     let a = acl::compile(&view);
     let jm = a.machines.iter().find(|m| m.name == "alice-mac").unwrap();
     assert!(!jm.command.contains("--ssh"));
@@ -230,6 +235,7 @@ fn github_roster_folds_into_view() {
         username: String::new(), transport: "direct".into(),
         grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
         advertises: vec![],
+        sharing: Default::default(),
     });
     let mut v2 = team::merge(&root, &[alice]);
     team::fold_github(&mut v2, &cache);

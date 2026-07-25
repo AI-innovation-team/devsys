@@ -27,7 +27,9 @@ pub enum SessionCmd {
 
 // 会话注册表：id → 指令发送端。用 std Mutex（send 非阻塞，不跨 await 持锁）。
 pub struct Sessions {
-    map: Mutex<HashMap<String, mpsc::UnboundedSender<SessionCmd>>>,
+    // id → (服务器名, 命令通道)。存名字是为了回答「哪些机器现在有活连接」——
+    // 织物图按它把节点画成「已连接·常亮」。
+    map: Mutex<HashMap<String, (String, mpsc::UnboundedSender<SessionCmd>)>>,
     seq: AtomicU64,
 }
 
@@ -42,14 +44,33 @@ impl Sessions {
         format!("s{}", self.seq.fetch_add(1, Ordering::Relaxed))
     }
     pub fn send(&self, id: &str, cmd: SessionCmd) {
-        if let Some(tx) = self.map.lock().unwrap().get(id) {
+        if let Some((_, tx)) = self.map.lock().unwrap().get(id) {
             let _ = tx.send(cmd);
         }
     }
 
+    // 注册一条新会话(远程 SSH 与本地 PTY 共用):返回 (id, 命令接收端)。
+    pub fn register(&self, name: &str) -> (String, mpsc::UnboundedReceiver<SessionCmd>) {
+        let id = self.next_id();
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.map.lock().unwrap().insert(id.clone(), (name.to_string(), tx));
+        (id, rx)
+    }
+    pub fn unregister(&self, id: &str) {
+        self.map.lock().unwrap().remove(id);
+    }
+
+    // 当前有活会话的服务器名（去重）。
+    pub fn active(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.map.lock().unwrap().values().map(|(n, _)| n.clone()).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
     // 关闭全部会话（退出登录时用）。
     pub fn close_all(&self) {
-        for tx in self.map.lock().unwrap().values() {
+        for (_, tx) in self.map.lock().unwrap().values() {
             let _ = tx.send(SessionCmd::Close);
         }
     }
@@ -95,15 +116,29 @@ async fn auth(handle: &mut Handle<Client>, server: &Server, secret: &str) -> Res
     }
 }
 
+// 入口拨号(整条链的第一跳 TCP)。tailnet 机 + 内嵌 tsnet 在跑 → 经 tsnet 的 SOCKS5 走
+// (tsnet 是用户态网络、不建 TUN 网卡,流量必须显式从它走);否则裸 TCP 直连
+// (系统级 Tailscale 用户由 OS 路由 100.x,直连即通)。
 async fn connect_direct(
     config: Arc<client::Config>,
     server: &Server,
     secret: &str,
+    socks: Option<&str>,
 ) -> Result<Handle<Client>, String> {
-    let addr = format!("{}:{}", server.host, server.port);
-    let mut handle = client::connect(config, addr, Client)
-        .await
-        .map_err(|e| format!("连接 {} 失败：{e}", server.host))?;
+    let mut handle = if server.transport == "tailnet" && socks.is_some() {
+        let proxy = socks.unwrap();
+        let stream = tokio_socks::tcp::Socks5Stream::connect(proxy, (server.host.as_str(), server.port))
+            .await
+            .map_err(|e| format!("经内嵌 tailnet(SOCKS {proxy})连 {} 失败：{e}", server.host))?;
+        client::connect_stream(config, stream, Client)
+            .await
+            .map_err(|e| format!("连接 {} 失败：{e}", server.host))?
+    } else {
+        let addr = format!("{}:{}", server.host, server.port);
+        client::connect(config, addr, Client)
+            .await
+            .map_err(|e| format!("连接 {} 失败：{e}", server.host))?
+    };
     auth(&mut handle, server, secret).await?;
     Ok(handle)
 }
@@ -137,14 +172,16 @@ async fn build_conn(
     target: &Server,
     target_secret: &str,
     jumps: Vec<(Server, String)>,
+    socks: Option<String>,
 ) -> Result<Conn, String> {
     let config = Arc::new(client::Config::default());
+    let socks = socks.as_deref();
     if jumps.is_empty() {
-        return Ok(Conn { handle: connect_direct(config, target, target_secret).await?, _jumps: vec![] });
+        return Ok(Conn { handle: connect_direct(config, target, target_secret, socks).await?, _jumps: vec![] });
     }
     let mut held: Vec<Handle<Client>> = Vec::new();
-    // 最外层跳板:直连。
-    let mut cur = connect_direct(config.clone(), &jumps[0].0, &jumps[0].1).await?;
+    // 最外层跳板:入口拨号(直连或经内嵌 tailnet)。
+    let mut cur = connect_direct(config.clone(), &jumps[0].0, &jumps[0].1, socks).await?;
     // 中间每一跳:在前一跳的连接上开道。
     for i in 1..jumps.len() {
         let next = hop_through(config.clone(), &cur, &jumps[i - 1].0.name, &jumps[i].0, &jumps[i].1).await?;
@@ -169,8 +206,9 @@ pub async fn exec(
     target_secret: String,
     jumps: Vec<(Server, String)>,
     command: String,
+    socks: Option<String>,
 ) -> Result<ExecOut, String> {
-    let conn = build_conn(&target, &target_secret, jumps).await?;
+    let conn = build_conn(&target, &target_secret, jumps, socks).await?;
     let mut channel = conn.handle.channel_open_session().await.map_err(e2s)?;
     channel.exec(true, command).await.map_err(e2s)?;
 
@@ -191,26 +229,62 @@ pub async fn exec(
     })
 }
 
+// 工作区名 → 远端 tmux 会话名。**只允许 [A-Za-z0-9_-]**：这串要进远端 shell 命令，
+// 白名单是唯一的注入防线（tmux 本身也不收 . 和 :）。
+pub fn tmux_session_name(ws: &str) -> Result<String, String> {
+    if ws.is_empty() || ws.len() > 64 {
+        return Err(format!("工作区名长度不合法：{ws:?}"));
+    }
+    if !ws.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(format!("工作区名只能用字母/数字/下划线/连字符：{ws:?}"));
+    }
+    Ok(ws.to_string())
+}
+
+// 持久会话的启动命令：有 tmux 就 attach-or-create（`-A`），没有就退回普通 shell 并说清楚。
+// 退回而不是报错——远端没装 tmux 不该让人连不上，但要让人知道这次关掉就丢。
+pub fn tmux_command(name: &str) -> String {
+    format!(
+        "if command -v tmux >/dev/null 2>&1; then exec tmux new-session -A -s '{name}'; \
+         else printf '\\033[2m[AIT.dev] 远端没装 tmux —— 本次是普通会话，断开即丢。\\033[0m\\n'; \
+         exec \"${{SHELL:-/bin/sh}}\" -l; fi"
+    )
+}
+
 // 建立会话：连接 + PTY + shell，起后台任务桥接，返回 session id。
+// `ws` 非空 = 持久工作区：跑 tmux attach-or-create，断开后远端仍在跑，重连即接回。
 pub async fn open(
     app: AppHandle,
     sessions: Arc<Sessions>,
     target: Server,
     target_secret: String,
     jumps: Vec<(Server, String)>,
+    ws: Option<String>,
+    socks: Option<String>,
 ) -> Result<String, String> {
-    let conn = build_conn(&target, &target_secret, jumps).await?;
+    // 先校验工作区名再连接：名字不合法就没必要建连接。
+    let tmux = match ws.as_deref().filter(|s| !s.is_empty()) {
+        Some(w) => Some(tmux_session_name(w)?),
+        None => None,
+    };
+
+    let conn = build_conn(&target, &target_secret, jumps, socks).await?;
 
     let mut channel = conn.handle.channel_open_session().await.map_err(e2s)?;
     channel
         .request_pty(false, "xterm-256color", 80, 24, 0, 0, &[])
         .await
         .map_err(e2s)?;
-    channel.request_shell(true).await.map_err(e2s)?;
+    match &tmux {
+        Some(name) => channel.exec(true, tmux_command(name)).await.map_err(e2s)?,
+        None => channel.request_shell(true).await.map_err(e2s)?,
+    }
 
     let id = sessions.next_id();
     let (tx, mut rx) = mpsc::unbounded_channel::<SessionCmd>();
-    sessions.map.lock().unwrap().insert(id.clone(), tx);
+    sessions.map.lock().unwrap().insert(id.clone(), (target.name.clone(), tx));
+    // 活跃集变了 → 广播,织物图把这台机点成「已连接」。
+    let _ = app.emit("ssh://active", sessions.active());
 
     let app2 = app.clone();
     let id2 = id.clone();
@@ -241,7 +315,42 @@ pub async fn open(
         }
         sessions2.map.lock().unwrap().remove(&id2);
         let _ = app2.emit(&close_ev, ());
+        let _ = app2.emit("ssh://active", sessions2.active());
     });
 
     Ok(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tmux_name_accepts_safe_chars() {
+        assert_eq!(tmux_session_name("ait-turing-1").unwrap(), "ait-turing-1");
+        assert_eq!(tmux_session_name("ws_2").unwrap(), "ws_2");
+    }
+
+    // 注入防线：这串会进远端 shell 命令，任何 shell 元字符都必须被挡在外面。
+    #[test]
+    fn tmux_name_rejects_shell_metachars() {
+        for bad in ["a;rm -rf /", "a b", "a'b", "a$(id)", "a`id`", "a|b", "a&b", "a\nb", "a.b", "a:b"] {
+            assert!(tmux_session_name(bad).is_err(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn tmux_name_rejects_empty_and_overlong() {
+        assert!(tmux_session_name("").is_err());
+        assert!(tmux_session_name(&"a".repeat(65)).is_err());
+    }
+
+    // attach-or-create + 没 tmux 时退回 shell，两条路都要在命令里。
+    #[test]
+    fn tmux_command_attaches_or_creates_with_fallback() {
+        let c = tmux_command("ws1");
+        assert!(c.contains("new-session -A -s 'ws1'"));
+        assert!(c.contains("command -v tmux"));
+        assert!(c.contains("SHELL:-/bin/sh"));
+    }
 }

@@ -45,7 +45,9 @@ export function ProvisionModal({
         <div className="prov-head">
           <div>
             <div className="prov-title">授权下发 · {server}</div>
-            <div className="prov-subt">按角色分配权限（RBAC）</div>
+            <div className="prov-subt">
+              按角色分配权限（RBAC）· {plan?.isolation === "container" ? "一人一容器" : "裸机账号"}
+            </div>
           </div>
           <button className="btn subtle sm" onClick={onClose}><Icon name="x" /></button>
         </div>
@@ -56,23 +58,58 @@ export function ProvisionModal({
           {plan && !result && (
             <>
               <p className="prov-intro">
-                将在 <strong>{server}</strong> 上为每位有权成员建立<strong>独立账号</strong>并装入其公钥
-                —— 身份到人，权限按角色定（core 拿 sudo、member 受限）。凭据不出本机，装的只是公钥。
+                {plan.isolation === "container" ? (
+                  <>将在 <strong>{server}</strong> 上给每位有权成员建<strong>一个独立容器</strong>，
+                  并装入其公钥 —— 身份到人、容器到人。他 SSH 进来直接落进自己的容器，拿不到宿主 shell。
+                  凭据不出本机，装的只是公钥。</>
+                ) : (
+                  <>将在 <strong>{server}</strong> 上为每位有权成员建立<strong>独立账号</strong>并装入其公钥
+                  —— 身份到人，权限按角色定（core 拿 sudo、member 受限）。凭据不出本机，装的只是公钥。</>
+                )}
               </p>
+
+              {plan.isolation === "container" && (
+                <div className="prov-accts">
+                  <div className="prov-sec-t">借出资源池（父 cgroup）</div>
+                  <div className="prov-pool">
+                    {plan.pool
+                      ? <>所有借用容器挂在同一个池下，加起来永不超 <strong>{plan.pool}</strong>。</>
+                      : <>未设上限 —— 容器不限 CPU/内存。</>}
+                  </div>
+                  {plan.datasets.length > 0 && (
+                    <>
+                      <div className="prov-sec-t">挂进每个容器的共享数据集</div>
+                      <div className="prov-chips">
+                        {plan.datasets.map((d) => (
+                          <span key={d} className="prov-chip"><Icon name="server" />{d}</span>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
 
               {plan.accounts.length > 0 ? (
                 <div className="prov-accts">
-                  <div className="prov-sec-t">将建立 / 更新的账号</div>
+                  <div className="prov-sec-t">
+                    {plan.isolation === "container" ? "将建立 / 更新的容器与账号" : "将建立 / 更新的账号"}
+                  </div>
                   <div className="prov-chips">
                     {plan.accounts.map((a) => (
                       <span key={a.name} className={"prov-chip" + (a.sudo ? " sudo" : "")}>
-                        <Icon name="user" />{a.name}<em>{a.role}{a.sudo ? " · sudo" : ""}</em>
+                        <Icon name="user" />{a.name}
+                        <em>
+                          {a.role}
+                          {a.mode === "forward" && " · 仅借道"}
+                          {a.mode === "container" && ` · ${a.container}`}
+                          {a.sudo && " · sudo"}
+                        </em>
                       </span>
                     ))}
                   </div>
                 </div>
               ) : (
-                <div className="import-err">没有可下发的账号 —— 无成员获此机 shell 授权，或成员缺公钥。</div>
+                <div className="import-err">没有可下发的账号 —— 无成员获此机授权，或成员缺公钥。</div>
               )}
 
               {plan.warnings.map((w, i) => (

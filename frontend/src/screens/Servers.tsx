@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 
 import { Me, Server } from "../api";
-import { data, supportsLocalTopology, type ServerInput, type SshHost } from "../data";
+import {
+  data, supportsLocalTopology, DEFAULT_SHARING,
+  type ServerInput, type SshHost, type Sharing, type ShareLimit,
+} from "../data";
 import { ImportModal } from "../components/ImportModal";
 import { ProvisionModal } from "../components/ProvisionModal";
 import { SelfNodeModal } from "../components/SelfNodeModal";
@@ -65,7 +68,14 @@ export function Servers({
 
   // 团队角色（贡献时按角色开档）+ 我的成员名（写进我的 members/<我>.yaml）。
   const [roles, setRoles] = useState<string[]>(["core", "member", "pub"]);
-  const myName = me?.user || "";
+  // 我的成员名 = **统一身份锚**(GitHub 登录名派生的账号句柄)。
+  // 曾用 me.user(本地 profile 文件),改 GitHub 登录后它恒为空 → 共享按钮永远禁用、点了没反应。
+  const [myName, setMyName] = useState("");
+  useEffect(() => {
+    data.tailnetIdentity()
+      .then((id) => setMyName(id.name || me?.user || ""))
+      .catch(() => setMyName(me?.user || ""));
+  }, [me?.user]);
   useEffect(() => {
     if (!teamPath) return;
     data.readTeamView(teamPath)
@@ -221,37 +231,100 @@ function LaunchCard({
   // grants：每个角色开的档位。默认 core=2 / member=1 / pub=0（缺省 1）。
   const defaultTier = (r: string) => (r === "core" ? 2 : r === "pub" ? 0 : 1);
   const [grants, setGrants] = useState<Record<string, number>>({});
+  // 「怎么关」= 隔离方式 + 借出上限 + 点名共享的数据集。与 grants（「开多少权」）正交。
+  const [iso, setIso] = useState<"account" | "container">("account");
+  const [cpus, setCpus] = useState("");
+  const [mem, setMem] = useState("");
+  const [gpus, setGpus] = useState("");
+  const [dsets, setDsets] = useState<{ host: string; as: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [shareErr, setShareErr] = useState("");
+  const [syncNote, setSyncNote] = useState(""); // 同步给团队的结果
 
   const shared = (s.shared_to?.length ?? 0) > 0;
   const sharedTeam = s.shared_to?.[0]?.replace(/^team:/, "") ?? "";
 
-  const openShare = () => {
-    // 初始化 grants（按角色默认）
+  // 打开面板:已共享的机器要**回填**它现有的设置，否则「改授权」会把主人配好的
+  // 上限/数据集悄悄清空（改一次权限赔进去一套借出策略）。
+  // 已共享的机器点「改授权」要能看见档位表 —— 面板原先只按 shared 分支渲染，
+  // 于是「改授权」点了没反应（永远停在已共享那屏）。用这个标志把编辑态摘出来。
+  const [editing, setEditing] = useState(false);
+
+  const openShare = async () => {
+    setEditing(true);
     const g: Record<string, number> = {};
     for (const r of roles) g[r] = defaultTier(r);
-    setGrants(g);
-    setSharing(true);
+    setIso("account"); setCpus(""); setMem(""); setGpus(""); setDsets([]);
     setShareErr("");
+    setSharing(true);
+    if (!shared || !teamPath) { setGrants(g); return; }
+    try {
+      const v = await data.readTeamView(teamPath);
+      const m = v.machines.find((x) => x.name === s.name);
+      if (m) {
+        for (const r of roles) if (m.grants[r] !== undefined) g[r] = m.grants[r];
+        const sh = m.sharing;
+        if (sh?.isolation === "container") setIso("container");
+        setCpus(sh?.limit?.cpus != null ? String(sh.limit.cpus) : "");
+        setMem(sh?.limit?.mem ?? "");
+        setGpus(sh?.limit?.gpus ?? "");
+        setDsets((sh?.data ?? []).map((d) => ({ host: d.host, as: d.as ?? "" })));
+      }
+    } catch { /* 读不到就用默认值 */ }
+    setGrants(g);
+  };
+
+  // 面板上的输入 → 后端的 Sharing。空字段一律不写进 team.yaml。
+  const buildSharing = (): Sharing => {
+    if (iso !== "container") return { ...DEFAULT_SHARING };
+    const n = parseFloat(cpus);
+    const limit: ShareLimit = {};
+    if (cpus.trim() && Number.isFinite(n) && n > 0) limit.cpus = n;
+    if (mem.trim()) limit.mem = mem.trim();
+    if (gpus.trim()) limit.gpus = gpus.trim();
+    const has = limit.cpus != null || !!limit.mem || !!limit.gpus;
+    return {
+      isolation: "container",
+      image: "",
+      limit: has ? limit : null,
+      data: dsets
+        .filter((d) => d.host.trim())
+        .map((d) => ({ host: d.host.trim(), as: d.as.trim() || undefined, mode: "ro" })),
+    };
+  };
+
+  // 贡献写在 members/<我>.yaml,**必须推到团队仓库**队友和控制面才看得到
+  // (控制面每 5 分钟从仓库对账 ACL)。推失败不回滚本地,提示去团队页重试。
+  const syncTeam = async (msg: string) => {
+    setSyncNote("同步给团队…");
+    try {
+      await data.teamGitPush(teamPath, msg);
+      setSyncNote("✅ 已同步给团队(控制面几分钟内生效)");
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e);
+      setSyncNote("⚠ 本地已保存,但推送团队仓库失败 —— 去「连接团队」页点「推送」重试。" + m.slice(0, 80));
+    }
   };
 
   const doShare = async () => {
-    setBusy(true); setShareErr("");
+    setBusy(true); setShareErr(""); setSyncNote("");
     try {
-      await data.shareServer(teamPath, myName, s.name, grants);
+      await data.shareServer(teamPath, myName, s.name, grants, buildSharing());
       await reload();
+      setEditing(false);
       setSharing(false);
+      await syncTeam(`chore(team): 共享 ${s.name}`);
     } catch (e) {
       setShareErr(e instanceof Error ? e.message : String(e));
     } finally { setBusy(false); }
   };
 
   const doUnshare = async () => {
-    setBusy(true); setShareErr("");
+    setBusy(true); setShareErr(""); setSyncNote("");
     try {
       await data.unshareServer(teamPath, myName, s.name);
       await reload();
+      await syncTeam(`chore(team): 取消共享 ${s.name}`);
     } catch (e) {
       setShareErr(e instanceof Error ? e.message : String(e));
     } finally { setBusy(false); }
@@ -295,7 +368,7 @@ function LaunchCard({
                 <button
                   className="btn subtle sm"
                   title={shared ? "共享设置" : "共享给团队"}
-                  onClick={() => (teamPath ? (sharing ? setSharing(false) : openShare()) : goTeam())}
+                  onClick={() => (teamPath ? (sharing ? (setSharing(false), setEditing(false)) : openShare()) : goTeam())}
                 >
                   <Icon name="users" />
                 </button>
@@ -311,7 +384,8 @@ function LaunchCard({
       {sharing && local && !readonly && (
         <div className="share-panel">
           {shareErr && <div className="import-err">{shareErr}</div>}
-          {shared ? (
+          {syncNote && <div className="sync-note">{syncNote}</div>}
+          {shared && !editing ? (
             <>
               <div className="share-t">
                 已共享给 <strong>{sharedTeam}</strong> —— 队友能看到这台机的拓扑了。
@@ -323,7 +397,7 @@ function LaunchCard({
                 </button>
                 <button className="btn subtle sm" disabled={busy} onClick={openShare}>改授权</button>
                 <button className="btn subtle sm" disabled={busy} onClick={doUnshare}>撤销共享</button>
-                <button className="btn subtle sm" onClick={() => setSharing(false)}>收起</button>
+                <button className="btn subtle sm" onClick={() => { setEditing(false); setSharing(false); }}>收起</button>
               </div>
             </>
           ) : (
@@ -350,11 +424,81 @@ function LaunchCard({
                   </div>
                 ))}
               </div>
+              {/* ★「档」= 开多少权（上面的 grants）与「怎么关」= 隔离方式（下面）正交。
+                  裸机账号给不了资源限额与目录隔离；一人一容器才能逐人兑现档位。 */}
+              <div className="share-t iso-t">
+                这些档位<strong>怎么兑现</strong>：
+              </div>
+              <div className="seg sm iso-seg">
+                <button className={iso === "account" ? "on" : ""} onClick={() => setIso("account")}>
+                  裸机账号
+                </button>
+                <button className={iso === "container" ? "on" : ""} onClick={() => setIso("container")}>
+                  一人一容器
+                </button>
+              </div>
+              <div className="iso-hint">
+                {iso === "account" ? (
+                  <>每人一个宿主账号（无 sudo / 有 sudo 按档定）。简单，但<strong>没有资源限额</strong>，
+                  一个人能占满整台机，也看得见你的目录。</>
+                ) : (
+                  <>每人一个独立容器：档位逐人兑现、配额逐人生效、爆炸半径只有他自己。
+                  他 SSH 进来直接落进自己的容器，<strong>拿不到宿主 shell</strong>，看不见你的目录。
+                  需要这台机装了 docker。</>
+                )}
+              </div>
+
+              {iso === "container" && (
+                <div className="iso-box">
+                  <div className="grant-row">
+                    <span className="grant-role">借出上限</span>
+                    <div className="iso-fields">
+                      <input value={cpus} onChange={(e) => setCpus(e.target.value)} placeholder="CPU 核数 如 8" />
+                      <input value={mem} onChange={(e) => setMem(e.target.value)} placeholder="内存 如 32g" />
+                      <input value={gpus} onChange={(e) => setGpus(e.target.value)} placeholder="GPU 如 all / device=0,1" />
+                    </div>
+                  </div>
+                  <div className="iso-note">
+                    这是你<strong>最多借出多少</strong> —— 落成一个父 cgroup 池，所有借用容器挂它下面，
+                    开多少个容器加起来都突破不了。随时可改、可设 0 收回。
+                    （GPU 是设备直通，不受父池约束：每个容器都会拿到你写的这组卡。）
+                  </div>
+
+                  <div className="grant-row">
+                    <span className="grant-role">共享数据集</span>
+                    <button className="btn subtle sm" onClick={() => setDsets((d) => [...d, { host: "", as: "" }])}>
+                      + 加一个
+                    </button>
+                  </div>
+                  {dsets.map((d, i) => (
+                    <div key={i} className="iso-fields">
+                      <input
+                        value={d.host}
+                        onChange={(e) => setDsets((a) => a.map((x, j) => (j === i ? { ...x, host: e.target.value } : x)))}
+                        placeholder="宿主路径 如 /data/imagenet"
+                      />
+                      <input
+                        value={d.as}
+                        onChange={(e) => setDsets((a) => a.map((x, j) => (j === i ? { ...x, as: e.target.value } : x)))}
+                        placeholder="容器内路径（留空 = 同上）"
+                      />
+                      <button className="btn subtle sm" onClick={() => setDsets((a) => a.filter((_, j) => j !== i))}>
+                        <Icon name="x" />
+                      </button>
+                    </div>
+                  ))}
+                  <div className="iso-note">
+                    只有你<strong>点名</strong>的目录会<strong>只读</strong>挂进每个容器；其余宿主目录一律不可见。
+                    大数据集共用一份、不各拷 —— 计算跑到数据旁边，数据不出这台机。
+                  </div>
+                </div>
+              )}
+
               <div className="share-row">
                 <button className="btn primary sm" disabled={busy || !myName} onClick={doShare}>
                   <Icon name="users" />{busy ? "共享中…" : "共享给团队"}
                 </button>
-                <button className="btn subtle sm" onClick={() => setSharing(false)}>取消</button>
+                <button className="btn subtle sm" onClick={() => { setEditing(false); if (!shared) setSharing(false); }}>取消</button>
               </div>
             </>
           )}

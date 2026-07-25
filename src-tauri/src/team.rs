@@ -27,6 +27,10 @@ pub struct TeamRoot {
     // 绑定 GitHub org：成员/公钥/角色从 org 自动导出（github.role_map = GitHub team→角色）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github: Option<crate::github::GithubBinding>,
+    // 团队 tailnet(可达性地基):管理员声明团队用哪张 tailnet(名/组织域),成员据此加入
+    // 同一张网 —— 不在同一 tailnet,直连和经门都无从谈起。空=未声明(仅显示引导)。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tailnet: String,
     // 联邦：我信任的别的 org，其成员算「联邦成员」而非 pub。v2 实现，先占位。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub federation: Vec<String>,
@@ -79,6 +83,8 @@ pub struct Device {
     pub grants: BTreeMap<String, u8>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub advertises: Vec<String>,
+    #[serde(default, skip_serializing_if = "Sharing::is_default")]
+    pub sharing: Sharing,
 }
 
 fn default_role() -> String {
@@ -121,6 +127,82 @@ pub struct Machine {
     // 校园那种「只能经它进内网」的场景:门是一等节点,网段内的机靠它可达。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub advertises: Vec<String>,
+    // 「档位怎么兑现」——裸机账号 or 一人一容器,以及主人的借出上限与点名共享的数据集。
+    #[serde(default, skip_serializing_if = "Sharing::is_default")]
+    pub sharing: Sharing,
+}
+
+// ★ 档位的**兑现方式**（v2）。「档」= 开多少权，「容器」= 怎么关，两者正交:
+// grants 一字不改，只是从 `useradd` 换成 `docker run`。
+//
+// 主人的借出上限 `limit` 落成一个**父 cgroup 池**，所有借用容器挂它下面 ——
+// cgroup 层级保证子容器加起来永不超父上限，开多少容器都突破不了（责任为门:随时可改/设 0 收回）。
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
+pub struct Sharing {
+    // account（默认，v1 裸机账号）| container（v2 一人一容器）
+    #[serde(default = "default_isolation", skip_serializing_if = "is_account")]
+    pub isolation: String,
+    // 容器基础镜像。空 = 用 app 现建的 devsys/base（带 bash/tmux/git，保证工作区持久化可用）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub image: String,
+    // 最多借出多少（父池上限）。None = 不限（不建父池）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<ShareLimit>,
+    // 主人**点名**只读挂进来的数据集。没点名的宿主目录一律不可见（数据分层第②③层）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data: Vec<ShareData>,
+}
+
+impl Sharing {
+    pub fn is_default(&self) -> bool {
+        *self == Sharing::default() || (self.is_account() && self.image.is_empty() && self.limit.is_none() && self.data.is_empty())
+    }
+    pub fn is_account(&self) -> bool {
+        self.isolation.is_empty() || self.isolation == "account"
+    }
+    pub fn is_container(&self) -> bool {
+        self.isolation == "container"
+    }
+}
+
+fn default_isolation() -> String {
+    "account".into()
+}
+fn is_account(s: &String) -> bool {
+    s.is_empty() || s == "account"
+}
+
+// 主人愿意借出的资源上限。字段全可选:只写你在意的那几项。
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
+pub struct ShareLimit {
+    // CPU 核数（可小数，如 7.5）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<f64>,
+    // 内存，docker 写法:"32g" / "4096m"
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mem: String,
+    // GPU，docker --gpus 写法:"all" / "2" / "device=0,1"。
+    // 注意:GPU **不受 cgroup 父池约束**（是设备直通，不是可分配资源）——只能逐容器点名。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub gpus: String,
+}
+
+// 主人点名共享的数据集:大数据集共用一份、不各拷，只读挂进每个借用容器。
+// 「把计算带到数据旁」—— 数据不出本机，容器就在这台机上跑。
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
+pub struct ShareData {
+    pub host: String, // 宿主上的路径
+    #[serde(rename = "as", default, skip_serializing_if = "String::is_empty")]
+    pub mount_as: String, // 容器内路径（空 = 同 host）
+    #[serde(default = "default_mode", skip_serializing_if = "is_ro")]
+    pub mode: String, // ro（默认）| rw
+}
+
+fn default_mode() -> String {
+    "ro".into()
+}
+fn is_ro(s: &String) -> bool {
+    s.is_empty() || s == "ro"
 }
 
 fn default_port() -> u16 {
@@ -151,6 +233,8 @@ pub struct ViewMachine {
     pub is_self: bool,
     // 广播的子网 CIDR（非空 = subnet router / 网关）。图里标成「门」。
     pub advertises: Vec<String>,
+    // 档位兑现方式 + 借出上限 + 点名共享的数据集（provision 据此建账号还是建容器）。
+    pub sharing: Sharing,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -166,6 +250,8 @@ pub struct ViewMember {
 pub struct TeamView {
     pub team: String,
     pub roles: Vec<String>, // 纯角色名（无 tier）
+    #[serde(default)]
+    pub tailnet: String,    // 团队声明的 tailnet(可达性地基)
     pub members: Vec<ViewMember>,
     pub machines: Vec<ViewMachine>,
 }
@@ -240,6 +326,7 @@ pub fn merge(root: &TeamRoot, members: &[MemberFile]) -> TeamView {
                 owner: mf.member.name.clone(),
                 is_self: true,
                 advertises: d.advertises.clone(),
+                sharing: d.sharing.clone(),
             });
         }
         // 贡献的服务器（管但不是本人）。
@@ -255,6 +342,7 @@ pub fn merge(root: &TeamRoot, members: &[MemberFile]) -> TeamView {
                 owner: mf.member.name.clone(),
                 is_self: false,
                 advertises: m.advertises.clone(),
+                sharing: m.sharing.clone(),
             });
         }
     }
@@ -265,6 +353,7 @@ pub fn merge(root: &TeamRoot, members: &[MemberFile]) -> TeamView {
     TeamView {
         team: root.team.clone(),
         roles: root.roles.clone(),
+        tailnet: root.tailnet.clone(),
         members: view_members,
         machines: view_machines,
     }
@@ -343,6 +432,7 @@ pub fn migrate_flat(text: &str) -> Option<(TeamRoot, Vec<MemberFile>)> {
         team: old.team,
         roles: default_roles(),
         github: None,
+        tailnet: String::new(),
         federation: vec![],
     };
     // 旧平表没有"谁贡献了哪台机"的归属信息 —— 全部归到第一个成员名下（迁移的近似）。
@@ -359,6 +449,7 @@ pub fn migrate_flat(text: &str) -> Option<(TeamRoot, Vec<MemberFile>)> {
             transport: m.transport,
             grants: BTreeMap::from([("member".into(), m.tier.max(1).min(2))]),
             advertises: vec![],
+            sharing: Default::default(),
         })
         .collect();
     // 每个旧成员成一份文件；机器挂在 owner 那份下。
@@ -394,6 +485,7 @@ pub fn new_root(team: &str) -> TeamRoot {
         team: team.trim().to_string(),
         roles: default_roles(),
         github: None,
+        tailnet: String::new(),
         federation: vec![],
     }
 }
@@ -512,6 +604,7 @@ machines:
             username: String::new(), transport: "direct".into(),
             grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1), ("pub".into(), 0)]),
             advertises: vec![],
+            sharing: Default::default(),
         });
         let bf = new_member_file("bob", "KB", "member");
         let df = new_member_file("dan", "KD", "pub");
@@ -537,12 +630,14 @@ machines:
             username: "alice".into(), transport: "tailnet".into(),
             grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
             advertises: vec![],
+            sharing: Default::default(),
         });
         upsert_machine(&mut af, Machine {
             name: "gpu".into(), host: "10.0.0.1".into(), port: 22, jump: None,
             username: String::new(), transport: "direct".into(),
             grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
             advertises: vec![],
+            sharing: Default::default(),
         });
         let v = merge(&root(), &[af]);
         // 两台算力节点:自身设备(is_self,名=alice)+ 服务器 gpu。
@@ -556,7 +651,7 @@ machines:
         // device 走 YAML 往返不丢。
         let back = parse_member(&member_to_yaml(&{
             let mut f = new_member_file("alice", "KA", "core");
-            f.member.device = Some(Device { host: "1.2.3.4".into(), port: 22, jump: None, username: String::new(), transport: "tailnet".into(), grants: BTreeMap::from([("member".into(), 1)]), advertises: vec![] });
+            f.member.device = Some(Device { host: "1.2.3.4".into(), port: 22, jump: None, username: String::new(), transport: "tailnet".into(), grants: BTreeMap::from([("member".into(), 1)]), advertises: vec![], sharing: Default::default() });
             f
         }).unwrap()).unwrap();
         assert_eq!(back.member.device.unwrap().host, "1.2.3.4");
@@ -567,6 +662,28 @@ machines:
         let v = view3();
         let gpu = v.machines.iter().find(|m| m.name == "gpu").unwrap();
         assert_eq!(gpu.owner, "alice");
+    }
+
+    // 双命名空间对齐:成员档 name=slug_login(gh login)、roster 成员=gh login(可能带大写)。
+    // fold 后必须还是同一个人(一个节点),不能裂成两个。身份锚统一为 GitHub 的关键回归。
+    #[test]
+    fn fold_github_aligns_slug_and_login_case() {
+        let root = new_root("t");
+        let mf = new_member_file(&slug_login("ColeHank"), "K-mine", "core"); // 本地档:colehank
+        let mut view = merge(&root, &[mf]);
+        assert_eq!(view.members.len(), 1);
+
+        let gh = vec![crate::github::GhMember {
+            login: "ColeHank".into(), // roster 保留大写
+            pubkeys: vec!["K-gh".into()],
+            role: "member".into(),
+        }];
+        fold_github(&mut view, &gh);
+        assert_eq!(view.members.len(), 1, "同一个人不能裂成两个节点");
+        let m = &view.members[0];
+        assert_eq!(m.name, "colehank");
+        assert_eq!(m.identity, "ColeHank"); // 空身份被补上 gh login
+        assert_eq!(m.pubkey, "K-mine"); // 手写档的公钥优先
     }
 
     #[test]
@@ -584,6 +701,7 @@ machines:
             username: String::new(), transport: "direct".into(),
             grants: BTreeMap::from([("member".into(), 1)]),
             advertises: vec![],
+            sharing: Default::default(),
         };
         upsert_machine(&mut f, m("1.1.1.1"));
         upsert_machine(&mut f, m("2.2.2.2"));
@@ -601,6 +719,7 @@ machines:
             jump: Some("bastion".into()), username: "alice".into(), transport: "jump".into(),
             grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
             advertises: vec![],
+            sharing: Default::default(),
         });
         let back = parse_member(&member_to_yaml(&f).unwrap()).unwrap();
         assert_eq!(back.machines[0].port, 2222);

@@ -62,10 +62,14 @@ export function TermView({
   titleRef.current = onTitle;
 
   useEffect(() => {
-    data.loadMe().then((me) => {
+    if (server === "~local") {
+      // 本机节点:本地 PTY,没有 host:port 可言。
+      setTitle("本机 · 本地终端");
+      titleRef.current?.("本机 · 本地终端");
+    } else data.loadMe().then((me) => {
       const s = me.servers.find((x) => x.name === server);
       if (s) {
-        const t = (ws ? ws + "  —  " : "") + (s.username ? s.username + "@" : "") + server + " · " + s.host + ":" + s.port;
+        const t = (s.username ? s.username + "@" : "") + server + " · " + s.host + ":" + s.port;
         setTitle(t);
         titleRef.current?.(t);
       }
@@ -98,7 +102,8 @@ export function TermView({
       onData: (d) => term.write(d),
       onClose: () => {
         statusRef.current?.(false);
-        term.write("\r\n\x1b[2m[AIT.dev] " + (ws ? "已断开 · 工作区仍在后台运行，回门户可重新接入" : "连接已关闭") + "\x1b[0m\r\n");
+        // 持久工作区（ws 非空 = 远端 tmux）：断开不等于活没了，重开同名工作区就接回。
+        term.write("\r\n\x1b[2m[AIT.dev] " + (ws ? "已断开 · 远端仍在跑，重开这台机即接回" : "连接已关闭") + "\x1b[0m\r\n");
       },
     });
     const send = (d: string) => session.write(d);

@@ -21,14 +21,23 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9" # team.yaml 解析（团队共享配置）
 ureq = { version = "2", features = ["json"] } # GitHub API 拉取花名册/公钥（轻量，纯 Rust TLS）
-# 凭据存加密保险库（Stronghold，主密码 + Argon2）。全平台一致，含移动端。
+# 凭据存加密保险库（Stronghold，Argon2）。全平台一致，含移动端。
+# 主密码已弃用：保险库钥匙 = OS 钥匙串里的随机设备密钥（登录改走 GitHub，本地不再验密码）。
 iota_stronghold = "2"
 argon2 = "0.5"
 zeroize = "1"
 getrandom = "0.2"
+# OS 钥匙串：存「保险库设备主密钥」+「GitHub token」。macOS Keychain / Windows 凭据管理器。
+# Linux 桌面需另启用 sync-secret-service（当前非目标）。钥匙串不可用时回退到 0600 文件。
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 # 原生 SSH（纯 Rust，异步，PTY + 通道转发用于 ProxyJump）。
 russh = "0.45"
 russh-keys = "0.45"
+# 本机终端:本地 PTY(「本机也是节点」—— 点本机节点直接出 shell,不走 SSH/sshd)。
+portable-pty = "0.8"
+# 内嵌 tsnet 的出站通道:SSH 拨号经 tsnet-helper 的 SOCKS5(:1055)走 tailnet。
+# tsnet 是用户态网络(不建 TUN 网卡),流量必须显式从它走 —— 这根管道就是接线处。
+tokio-socks = "0.5"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net"] }
 async-trait = "0.1"
 

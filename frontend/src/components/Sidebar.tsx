@@ -13,8 +13,10 @@ interface Props {
   user: string;
   isAdmin: boolean;
   local: boolean; // 自包含 app 本地模式：无门户身份/工作区/文档
-  onLogout?: () => void; // 本地退出登录（锁库）
+  onLogout?: () => void; // 退出登录（清 GitHub 会话）
   onDocs: () => void; // 「文档」按钮：进入文档首页
+  ghLogin?: string; // GitHub 登录名（登录后显示）
+  onGithubLogin?: () => void; // 连接/切换 GitHub 账号
 }
 
 const NAV: { id: View; icon: string; label: string }[] = [
@@ -25,9 +27,11 @@ const NAV: { id: View; icon: string; label: string }[] = [
   { id: "docs", icon: "file", label: "文档" },
 ];
 
-export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggleTheme, user, isAdmin, local, onLogout, onDocs }: Props) {
-  // 本地模式保留「服务器」+「连接团队」；工作区/文档是门户（在线模式）功能。
-  const nav = local ? NAV.filter((n) => n.id === "home" || n.id === "servers" || n.id === "team") : NAV;
+export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggleTheme, user, isAdmin, local, onLogout, onDocs, ghLogin, onGithubLogin }: Props) {
+  // 本地模式：主页(织物图) + 工作区(活终端) + 服务器 + 连接团队；文档是门户功能。
+  const nav = local
+    ? NAV.filter((n) => n.id === "home" || n.id === "workspaces" || n.id === "servers" || n.id === "team")
+    : NAV;
   const [menuOpen, setMenuOpen] = useState(false);
   const footRef = useRef<HTMLDivElement>(null);
 
@@ -75,9 +79,9 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
 
       <div className="rail-foot" ref={footRef}>
         <button className="avatar-btn" onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }} aria-label="用户菜单">
-          <span className="avatar">{(local ? (user || "本") : (user || "·")).slice(0, 1)}</span>
+          <span className="avatar">{(local ? (ghLogin || user || "本") : (user || "·")).slice(0, 1).toUpperCase()}</span>
           <div className="avatar-meta">
-            <div className="avatar-name">{local ? (user || "本地") : (user || "…")}</div>
+            <div className="avatar-name">{local ? (ghLogin || user || "本地") : (user || "…")}</div>
           </div>
           <Icon name="updown" className="avatar-chev" />
         </button>
@@ -86,6 +90,11 @@ export function Sidebar({ view, setView, collapsed, toggleCollapse, theme, toggl
             {isAdmin && (
               <button onClick={() => { setView("admin"); setMenuOpen(false); }}>
                 <Icon name="shield" />管理
+              </button>
+            )}
+            {local && onGithubLogin && (
+              <button onClick={() => { onGithubLogin(); setMenuOpen(false); }}>
+                <Icon name="users" />{ghLogin ? "切换 GitHub 账号" : "连接 GitHub"}
               </button>
             )}
             <button onClick={() => { setView("settings"); setMenuOpen(false); }}>

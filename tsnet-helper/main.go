@@ -52,6 +52,7 @@ func main() {
 		dir       = flag.String("dir", "", "tsnet 状态目录(存节点身份)")
 		hostname  = flag.String("hostname", "devsys", "本节点在 tailnet 的名字")
 		authkey   = flag.String("authkey", "", "预授权 key(可选;不填则走浏览器登录)")
+		control   = flag.String("control", "", "控制面 URL(空=官方 Tailscale;填自建 Headscale 即接团队自持网)")
 		socksAddr = flag.String("socks", "127.0.0.1:1055", "出站 SOCKS5 监听")
 		ingress   = flag.Bool("ingress", false, "开入站:tailnet:22 → 本机 sshd")
 		sshdPort  = flag.Int("sshd-port", 22, "本机 sshd 端口(入站代理目标)")
@@ -69,11 +70,16 @@ func main() {
 		Dir:      *dir,
 		Hostname: *hostname,
 		AuthKey:  *authkey,
-		// tsnet 日志很吵,且会污染我们经 stdout 的 JSON 协议 —— 两条日志路都丢弃。
-		Logf:     func(string, ...any) {},
-		UserLogf: func(string, ...any) {},
+		// 自建控制面(Headscale)：指向它即接入团队自持网;空则连官方 Tailscale。
+		// 这一行就是「一个团队一个 tailnet、完全 app 生态内自持」的接线处。
+		ControlURL: *control,
+		// tsnet 日志导到 stderr(不污染 stdout 的 JSON 协议;Rust 侧 stderr=null 生产静默,
+		// 直接跑 helper 时可见 —— 诊断连不上控制面/DERP 的问题全靠它)。
+		Logf:     func(f string, a ...any) { fmt.Fprintf(os.Stderr, "[tsnet] "+f+"\n", a...) },
+		UserLogf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, "[tsnet] "+f+"\n", a...) },
 	}
-	defer srv.Close()
+	// tsnet 在 Up 尚未完成时 Close 会 nil deref(tsnet 内部边界);退出时吞掉,别 panic 刷栈。
+	defer func() { defer func() { _ = recover() }(); srv.Close() }()
 
 	ctx := context.Background()
 	go pollStatus(ctx, srv, *socksAddr, *ingress)
@@ -102,9 +108,14 @@ func main() {
 
 	// Up 在后台推进登录（NeedsLogin 时会阻塞到浏览器授权完成）。不阻塞主流程。
 	go func() {
-		if _, err := srv.Up(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "[helper] srv.Up begin control=%q authkey=%v\n", *control, *authkey != "")
+		st, err := srv.Up(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[helper] srv.Up ERR: %v\n", err)
 			emit(status{State: "error", Err: "tsnet 启动失败: " + err.Error()})
+			return
 		}
+		fmt.Fprintf(os.Stderr, "[helper] srv.Up OK ips=%v\n", st.TailscaleIPs)
 	}()
 
 	// 保活:随 stdin 关闭而退出(Rust 侧 kill 掉 sidecar 时 stdin EOF)。

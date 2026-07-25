@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { TailnetPanel } from "../components/TailnetPanel";
 import { data, type AclPlan, type GitStatus, type TeamView } from "../data";
 import { Icon } from "../icons";
 
@@ -13,12 +14,14 @@ export function Team({
   goSettings,
   teamPath,
   setTeamPath,
+  onReauth,
 }: {
   reload: () => Promise<void> | void;
   goServers: () => void;
   goSettings: () => void;
   teamPath: string;
   setTeamPath: (p: string) => void;
+  onReauth: () => void; // 重新授权 GitHub（退出重新登录，拿 repo 权限）
 }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -39,10 +42,7 @@ export function Team({
   const [newRole, setNewRole] = useState("member");
   const [newIdentity, setNewIdentity] = useState("");
 
-  // GitHub org 绑定（花名册自动导出）
-  const [ghOrg, setGhOrg] = useState("");
-  const [ghToken, setGhToken] = useState("");
-  const [ghBinding, setGhBinding] = useState(false); // 展开绑定表单
+  // GitHub 花名册同步结果(绑定由登录选 org 自动完成,不再有手动表单)
   const [ghSync, setGhSync] = useState<{ count: number; with_keys: number } | null>(null);
 
   // 验证过的团队身份（tailnet SSO）。login 为空 = 未连 tailnet。
@@ -58,6 +58,13 @@ export function Team({
   const [cloneUrl, setCloneUrl] = useState("");
   const [tick, setTick] = useState(0); // 触发刷新
 
+  // GitHub 组织（登录选定，团队 = 该 org 的约定仓库 <org>/ait-team）。可切换。
+  const [curOrg, setCurOrg] = useState("");
+  const [orgs, setOrgs] = useState<string[] | null>(null); // null=未展开列表
+  const [orgBusy, setOrgBusy] = useState(false);
+  const [manualOrg, setManualOrg] = useState(""); // 手动输入（API 没列出的 org 也能激活）
+  const [reauth, setReauth] = useState(false); // 建仓库缺 repo 权限 → 提示重新授权
+
   useEffect(() => {
     data.myPubkeys().then((k) => { setPubkeys(k); setPubkey(k[0] || ""); }).catch(() => {});
     data.tailnetIdentity().then((id) => {
@@ -65,7 +72,51 @@ export function Team({
       if (id.name) setMyName(id.name); // 验证身份 → 用它派生的账号名（不再自填）
     }).catch(() => {});
     data.localIdentity().then(setLocalId).catch(() => {});
+    data.ghState().then((s) => setCurOrg(s.org)).catch(() => {});
   }, []);
+
+  // 切换组织：clone/绑定那个 org 的约定仓库，设为当前团队。
+  const switchOrg = async (org: string) => {
+    if (org === curOrg) { setOrgs(null); return; }
+    setOrgBusy(true); setErr("");
+    try {
+      const r = await data.ghActivateOrg(org);
+      if (r.path) setTeamPath(r.path);
+      setCurOrg(org);
+      setOrgs(null);
+      await reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOrgBusy(false);
+    }
+  };
+  const openOrgList = async () => {
+    if (orgs) { setOrgs(null); return; }
+    try { setOrgs(await data.ghOrgs()); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+  };
+
+  // 为当前 org 生成团队仓库初始模板（team.yaml + members/ + README + git init），设为当前团队。
+  const initTemplate = async () => {
+    if (!curOrg) return;
+    setOrgBusy(true); setErr("");
+    try {
+      const p = await data.ghInitTeam(curOrg);
+      setTeamPath(p);
+      setTick((t) => t + 1); // 刷新 git 状态（现在是个 repo 了）
+      setGitLog(
+        `已生成 ${curOrg} 的团队配置模板（team.yaml + members/ + README，已 git init）。\n` +
+        `接着建 GitHub 私有仓库 ${curOrg}/ait-team 并推送：\n` +
+        `  git remote add origin git@github.com:${curOrg}/ait-team.git\n` +
+        `  git branch -M main && git push -u origin main\n` +
+        `或用 gh：gh repo create ${curOrg}/ait-team --private --source=. --push`,
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOrgBusy(false);
+    }
+  };
   useEffect(() => {
     if (!teamPath) { setCfg(null); setGit(null); return; }
     data.readTeamView(teamPath).then(setCfg).catch(() => setCfg(null));
@@ -100,6 +151,23 @@ export function Team({
       setGitLog(await data.teamGitPush(teamPath, `chore(team): 更新 ${cfg?.team ?? "team"} 配置`));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(false); setTick((t) => t + 1); }
+  };
+
+  // 打开 GitHub 新建仓库页（org + ait-team + private 预填）——建仓库需写权限，这一步在网页做。
+  const openNewRepo = async () => {
+    const u = await data.ghNewRepoUrl(curOrg);
+    if (u) data.openUrl(u);
+  };
+  // 一键建仓库并推送:API 建 <org>/ait-team + 系统 git 连远程推送。缺 repo 权限 → 提示重新授权。
+  const connectPush = async () => {
+    setBusy(true); setErr(""); setGitLog(""); setReauth(false);
+    try {
+      setGitLog(await data.ghPushTeam(curOrg, teamPath));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.startsWith("REAUTH:")) { setReauth(true); setErr(msg.slice(7)); }
+      else setErr(msg);
     } finally { setBusy(false); setTick((t) => t + 1); }
   };
 
@@ -165,25 +233,11 @@ export function Team({
   };
 
   // 绑定 org（默认角色映射：core-team→core，其余→member）+ 立即同步一次。
-  const bindAndSync = async () => {
-    if (!ghOrg.trim()) { setErr("填 GitHub org 名"); return; }
-    setBusy(true); setErr("");
-    try {
-      await data.bindGithub(teamPath, ghOrg.trim(), { "core-team": "core", "*": "member" });
-      const r = await data.syncGithub(teamPath, ghToken.trim() || undefined);
-      setGhSync({ count: r.count, with_keys: r.with_keys });
-      setCfg(await data.readTeamView(teamPath));
-      await reload();
-      setGhBinding(false);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally { setBusy(false); }
-  };
-
+  // 同步花名册。token 不用填 —— 后端自动用登录时存进钥匙串的。
   const resync = async () => {
     setBusy(true); setErr("");
     try {
-      const r = await data.syncGithub(teamPath, ghToken.trim() || undefined);
+      const r = await data.syncGithub(teamPath);
       setGhSync({ count: r.count, with_keys: r.with_keys });
       setCfg(await data.readTeamView(teamPath));
       await reload();
@@ -217,13 +271,13 @@ export function Team({
         <p>团队是一份共享配置 + 每人登记自己的设备。共享的是<strong>拓扑</strong>，不是凭据 —— 你的密码和私钥永不出本机。</p>
       </header>
 
-      {/* 身份条：团队操作绑定验证过的 SSO 身份（防冒名）。未连 tailnet 则未验证。 */}
+      {/* 身份条:团队操作绑定验证身份(GitHub 登录优先,tailnet SSO 备选)防冒名。 */}
       <div className={"ident-bar" + (verified ? " ok" : "")}>
         <Icon name={verified ? "check" : "alert"} />
         {verified ? (
           <span>已验证身份 <strong>{ident.display || ident.login}</strong>（{ident.login}）· 账号名 <code>{ident.name}</code></span>
         ) : (
-          <span>未验证身份 —— 团队操作应绑定真实身份。<a onClick={goSettings} style={{ cursor: "pointer" }}>连接 tailnet 登录</a>后即以 SSO 身份认领，防止冒名。</span>
+          <span>未验证身份 —— 用 GitHub 登录(侧栏头像菜单「连接 GitHub」)或<a onClick={goSettings} style={{ cursor: "pointer" }}>连接 tailnet</a>后,团队操作即以该身份认领,防止冒名。</span>
         )}
       </div>
 
@@ -286,24 +340,109 @@ export function Team({
             </>
           ) : (
             <>
-              <div className="field">
-                <label>当前 team.yaml</label>
-                <div className="inp" style={{ cursor: "pointer" }} onClick={pick}>
-                  <Icon name="folder" />
-                  <input value={teamPath} placeholder="选择一份 team.yaml…" readOnly style={{ cursor: "pointer" }} />
+              {/* GitHub 组织 = 团队。团队配置 = 该 org 的约定仓库 <org>/ait-team。 */}
+              {curOrg && (
+                <div className="org-bar">
+                  <div className="org-cur">
+                    <Icon name="users" />
+                    <div>
+                      <div className="org-name">{curOrg}</div>
+                      <div className="org-sub">团队配置仓库 <code>{curOrg}/ait-team</code></div>
+                    </div>
+                  </div>
+                  <button className="btn subtle sm" disabled={orgBusy} onClick={openOrgList}>
+                    <Icon name="updown" />{orgBusy ? "切换中…" : "切换组织"}
+                  </button>
                 </div>
-              </div>
+              )}
+              {orgs && (
+                <div className="org-list">
+                  {orgs.length === 0 && (
+                    <div className="org-empty">
+                      API 没列到组织 —— GitHub App 只看得到已安装它的 org(换经典 OAuth App 可列全)。下面手动输入也能用。
+                    </div>
+                  )}
+                  {orgs.map((o) => (
+                    <button key={o} className={"org-opt" + (o === curOrg ? " on" : "")} disabled={orgBusy} onClick={() => switchOrg(o)}>
+                      <Icon name="users" />{o}{o === curOrg && " · 当前"}
+                    </button>
+                  ))}
+                  {/* 兜底:直接输 org 名。激活只需名字 —— clone 走你自己的 git 权限,不受 OAuth 授权范围限制。 */}
+                  <div className="org-manual">
+                    <input
+                      value={manualOrg}
+                      onChange={(e) => setManualOrg(e.target.value)}
+                      placeholder="没列出?直接输入组织名…"
+                      onKeyDown={(e) => e.key === "Enter" && manualOrg.trim() && switchOrg(manualOrg.trim())}
+                    />
+                    <button className="btn subtle sm" disabled={!manualOrg.trim() || orgBusy} onClick={() => switchOrg(manualOrg.trim())}>
+                      {orgBusy ? "…" : "使用"}
+                    </button>
+                  </div>
+                  {/* 没列出的 org 多半开了第三方 App 限制:owner 去 Grant、成员去 Request(GitHub 页面完成)。 */}
+                  <button className="org-authlink" onClick={async () => { const u = await data.ghAuthorizeUrl(); if (u) data.openUrl(u); }}>
+                    组织没列出? 在 GitHub 授权页 Grant(owner)/ Request(成员) →
+                  </button>
+                </div>
+              )}
+
+              {/* 约定仓库不存在 → 只显示成员，机器共享未生效。可一键生成初始模板。 */}
+              {curOrg && git && !git.is_repo && (
+                <div className="org-hint">
+                  <div>组织 <b>{curOrg}</b> 还没有团队仓库 <code>{curOrg}/ait-team</code> —— 现在只显示成员。
+                  机器共享要先有这个仓库。</div>
+                  <button className="btn primary sm" style={{ marginTop: 10 }} disabled={orgBusy} onClick={initTemplate}>
+                    <Icon name="save" />{orgBusy ? "生成中…" : `为 ${curOrg} 生成初始配置模板`}
+                  </button>
+                </div>
+              )}
+
+              {/* 高级：直接指定一份本地 team.yaml（一般不需要，团队跟随上面的组织）。 */}
+              {/* 高级:主路是「登录选 org 自动接管一切」;这些手动路径收在这里备用。 */}
+              <details className="team-adv">
+                <summary>高级 · 手动管理 team.yaml(一般不需要,团队跟随上面的组织)</summary>
+                <div className="field" style={{ marginTop: 8 }}>
+                  <div className="inp" style={{ cursor: "pointer" }} onClick={pick}>
+                    <Icon name="folder" />
+                    <input value={teamPath} placeholder="选择一份 team.yaml…" readOnly style={{ cursor: "pointer" }} />
+                  </div>
+                </div>
+                <div className="cred-foot" style={{ marginTop: 8 }}>
+                  <button className="btn subtle sm" onClick={pick}>选择文件</button>
+                  <button className="btn subtle sm" onClick={() => { setCloning(true); setErr(""); }}>从 git 克隆</button>
+                  <button className="btn subtle sm" onClick={() => { setCreating(true); setErr(""); }}>新建团队</button>
+                </div>
+              </details>
+
+              {/* 本地仓库但还没连 GitHub:一键建仓库(API)+ 推送(git)。缺 repo 权限时提示重新授权。 */}
+              {git?.is_repo && !git.has_remote && curOrg && (
+                <div className="git-connect">
+                  <div className="git-connect-hd">还没连 GitHub —— 把 <code>{curOrg}/ait-team</code> 推上去,队友才拉得到:</div>
+                  <div className="git-connect-row">
+                    <button className="btn primary sm" disabled={busy} onClick={connectPush}>
+                      <Icon name="upload" />{busy ? "建仓库并推送…" : "一键建仓库并推送"}
+                    </button>
+                    <button className="btn subtle sm" disabled={busy} onClick={openNewRepo}>手动在网页建</button>
+                  </div>
+                  {reauth ? (
+                    <div className="git-connect-tip">
+                      需要仓库权限才能自动建仓库。<button className="org-authlink" onClick={onReauth}>重新授权 GitHub(退出重新登录)→</button> 或点上面「手动在网页建」。
+                    </div>
+                  ) : (
+                    <div className="git-connect-tip">建仓库用你的 GitHub 授权、推送走你自己的 git 凭据,全程不碰命令行。</div>
+                  )}
+                </div>
+              )}
 
               {/* git 同步条：拉队友的更新 / 推我的贡献 */}
-              {git?.is_repo && (
+              {git?.is_repo && git.has_remote && (
                 <div className="git-bar">
                   <span className="git-branch"><Icon name="network" />{git.branch}</span>
                   {git.dirty && <span className="git-dirty">有未推送的改动</span>}
-                  {!git.has_remote && <span className="git-dirty">无 remote · 推不出去</span>}
-                  <button className="btn subtle sm" disabled={busy || !git.has_remote} onClick={gitPull}>
+                  <button className="btn subtle sm" disabled={busy} onClick={gitPull}>
                     <Icon name="refresh" />拉取
                   </button>
-                  <button className="btn subtle sm" disabled={busy || !git.has_remote} onClick={gitPush}>
+                  <button className="btn subtle sm" disabled={busy} onClick={gitPush}>
                     <Icon name="upload" />推送
                   </button>
                 </div>
@@ -323,9 +462,6 @@ export function Team({
                 <button className="btn primary sm" disabled={busy || !teamPath} onClick={load}>
                   <Icon name="users" />{busy ? "加载中…" : "加载"}
                 </button>
-                <button className="btn subtle sm" onClick={pick}>选择文件</button>
-                <button className="btn subtle sm" onClick={() => { setCloning(true); setErr(""); }}>从 git 克隆</button>
-                <button className="btn subtle sm" onClick={() => { setCreating(true); setErr(""); }}>新建团队</button>
                 {done && <button className="btn subtle sm" onClick={goServers}>去服务器页</button>}
               </div>
             </>
@@ -403,6 +539,15 @@ export function Team({
         </article>
       )}
 
+      {/* 团队网络（tailnet）= 可达性地基。大家在同一张 tailnet,直连/经门才谈得上。
+          从「设置」深处提到团队流程里 —— 这是团队一等基建,不是技术开关。 */}
+      {cfg && !creating && (
+        <section style={{ marginTop: 16 }}>
+          <div className="acl-sec-t" style={{ marginBottom: 8 }}>团队网络 · Tailnet（可达性地基）</div>
+          <TailnetPanel teamTailnet={cfg.tailnet} />
+        </section>
+      )}
+
       {/* GitHub org 花名册：绑定后成员/公钥/角色自动导出，新人进 org 自动加入 */}
       {cfg && !creating && (
         <article className="card open" style={{ marginTop: 16 }}>
@@ -414,38 +559,14 @@ export function Team({
           </div>
           <div className="cfg-body">
             <p className="acl-intro">
-              绑定 GitHub org 后，<strong>成员、公钥、角色全自动导出</strong> —— 不用每人手动登记。
+              成员、公钥、角色从 GitHub org <strong>全自动导出</strong> —— 登录选组织即已绑定,不用每人手动登记。
               新人进 org、下次同步就自动出现（公钥拉自 <code>github.com/&lt;user&gt;.keys</code>）。
-              角色映射：<code>core-team</code> → core，其余 → member。
+              角色映射在 team.yaml 的 <code>role_map</code>(默认全员 member,可加 <code>core-team: core</code>)。
             </p>
-            {ghBinding ? (
-              <>
-                <div className="row2">
-                  <div className="field">
-                    <label>GitHub org 名</label>
-                    <div className="inp"><Icon name="network" />
-                      <input value={ghOrg} onChange={(e) => setGhOrg(e.target.value)} placeholder="如 neuroai-lab" autoComplete="off" />
-                    </div>
-                  </div>
-                  <div className="field">
-                    <label>Token（私有 org 才需要，公开 org 留空）</label>
-                    <div className="inp"><Icon name="key" />
-                      <input value={ghToken} type="password" onChange={(e) => setGhToken(e.target.value)} placeholder="ghp_…（可选）" autoComplete="off" />
-                    </div>
-                  </div>
-                </div>
-                <div className="cred-foot">
-                  <button className="btn primary sm" disabled={busy} onClick={bindAndSync}><Icon name="refresh" />{busy ? "同步中…" : "绑定并同步"}</button>
-                  <button className="btn subtle sm" onClick={() => setGhBinding(false)}>取消</button>
-                </div>
-              </>
-            ) : (
-              <div className="share-row">
-                <button className="btn subtle sm" onClick={() => { setGhBinding(true); setErr(""); }}><Icon name="network" />绑定 org</button>
-                <button className="btn subtle sm" disabled={busy} onClick={resync}><Icon name="refresh" />重新同步</button>
-                {ghSync && <span className="save-note">已同步 {ghSync.count} 名成员（{ghSync.with_keys} 有公钥）</span>}
-              </div>
-            )}
+            <div className="share-row">
+              <button className="btn subtle sm" disabled={busy} onClick={resync}><Icon name="refresh" />重新同步</button>
+              {ghSync && <span className="save-note">已同步 {ghSync.count} 名成员（{ghSync.with_keys} 有公钥）</span>}
+            </div>
           </div>
         </article>
       )}

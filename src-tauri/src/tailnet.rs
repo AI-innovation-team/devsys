@@ -95,6 +95,7 @@ impl Tailnet {
         hostname: &str,
         authkey: &str,
         ingress: bool,
+        control: &str,
     ) -> Result<(), String> {
         let mut guard = self.child.lock().unwrap();
         if guard.is_some() {
@@ -105,6 +106,19 @@ impl Tailnet {
         cmd.args(["--dir", dir, "--hostname", hostname, "--socks", "127.0.0.1:1055"]);
         if !authkey.is_empty() {
             cmd.args(["--authkey", authkey]);
+        }
+        if !control.is_empty() {
+            cmd.args(["--control", control]); // 团队自建 Headscale;空则官方 Tailscale
+            // 自建控制面必须**绕过系统代理直连** —— clash/mihomo/VPN 会把控制面 HTTPS
+            // 截成 EOF(实测:tsnet 走系统代理连 headscale 一直 fetch control key: EOF)。
+            let host = control
+                .trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .split('/')
+                .next()
+                .unwrap_or(control);
+            cmd.env("NO_PROXY", host);
+            cmd.env("no_proxy", host);
         }
         if ingress {
             cmd.arg("--ingress");

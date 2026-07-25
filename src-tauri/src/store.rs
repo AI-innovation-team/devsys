@@ -103,6 +103,15 @@ pub fn set_shared(dir: &PathBuf, name: &str, team: &str, on: bool) -> Result<Vec
 }
 
 // 保险库重置后：把所有 has_secret 标记归零（凭据已销毁，标记不能继续骗人）。
+// 清掉所有团队来源的服务器(source=team:*)。单活跃团队不变量:store 里只该有
+// mine + 当前团队;登出/换 org 时旧团队的机器必须移除,否则织物图留残余节点。
+pub fn remove_team_sources(dir: &PathBuf) -> Result<Vec<Server>, String> {
+    let mut list = load(dir);
+    list.retain(|s| !s.source.starts_with("team:"));
+    save(dir, &list)?;
+    Ok(list)
+}
+
 pub fn clear_all_secrets(dir: &PathBuf) -> Result<Vec<Server>, String> {
     let mut list = load(dir);
     for s in list.iter_mut() {
