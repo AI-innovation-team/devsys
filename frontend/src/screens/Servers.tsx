@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Me, Server } from "../api";
 import {
   data, supportsLocalTopology, DEFAULT_SHARING,
-  type ServerInput, type SshHost, type Sharing, type ShareLimit,
+  type ServerInput, type SshHost, type Sharing, type ShareLimit, type Isolation, type HostCaps,
 } from "../data";
 import { ImportModal } from "../components/ImportModal";
 import { ProvisionModal } from "../components/ProvisionModal";
@@ -232,7 +232,10 @@ function LaunchCard({
   const defaultTier = (r: string) => (r === "core" ? 2 : r === "pub" ? 0 : 1);
   const [grants, setGrants] = useState<Record<string, number>>({});
   // 「怎么关」= 隔离方式 + 借出上限 + 点名共享的数据集。与 grants（「开多少权」）正交。
-  const [iso, setIso] = useState<"account" | "container">("account");
+  const [iso, setIso] = useState<Isolation>("account");
+  // 那台机到底支持哪几种兑现方式 —— 共享**之前**就探，别等下发才发现没装 docker。
+  const [caps, setCaps] = useState<HostCaps | null>(null);
+  const [capsBusy, setCapsBusy] = useState(false);
   const [cpus, setCpus] = useState("");
   const [mem, setMem] = useState("");
   const [gpus, setGpus] = useState("");
@@ -250,8 +253,36 @@ function LaunchCard({
   // 于是「改授权」点了没反应（永远停在已共享那屏）。用这个标志把编辑态摘出来。
   const [editing, setEditing] = useState(false);
 
+  // 三档兑现方式。能不能用取决于那台机的实际能力（探测结果),不可用的直接灰掉并说清缺什么。
+  const ISOS: { v: Isolation; label: string; why: (c: HostCaps | null) => string }[] = [
+    {
+      v: "account", label: "裸机账号",
+      why: (c) => (!c ? "" : c.os !== "linux" ? "下发脚本只支持 Linux" : !c.rootful ? "需要这台机的 root / 免密 sudo" : ""),
+    },
+    {
+      v: "container", label: "一人一容器",
+      why: (c) => (!c ? "" : c.os !== "linux" ? "下发脚本只支持 Linux"
+        : !c.rootful ? "需要这台机的 root / 免密 sudo"
+        : !c.docker ? "这台机没装 docker" : !c.docker_running ? "docker 守护进程没在跑" : ""),
+    },
+    {
+      v: "rootless", label: "一人一容器 · 免 root",
+      why: (c) => (!c ? "" : c.os !== "linux" ? "下发脚本只支持 Linux"
+        : !c.podman && !c.docker ? "这台机没装 podman 也没装 docker" : ""),
+    },
+  ];
+  const isoBlocked = (v: Isolation) => ISOS.find((i) => i.v === v)!.why(caps);
+
+  const probe = async () => {
+    setCapsBusy(true); setCaps(null);
+    try { setCaps(await data.probeHostCaps(s.name)); }
+    catch { /* 连不上就不显示能力条，不打断共享 */ }
+    finally { setCapsBusy(false); }
+  };
+
   const openShare = async () => {
     setEditing(true);
+    void probe();
     const g: Record<string, number> = {};
     for (const r of roles) g[r] = defaultTier(r);
     setIso("account"); setCpus(""); setMem(""); setGpus(""); setDsets([]);
@@ -264,7 +295,7 @@ function LaunchCard({
       if (m) {
         for (const r of roles) if (m.grants[r] !== undefined) g[r] = m.grants[r];
         const sh = m.sharing;
-        if (sh?.isolation === "container") setIso("container");
+        if (sh?.isolation === "container" || sh?.isolation === "rootless") setIso(sh.isolation);
         setCpus(sh?.limit?.cpus != null ? String(sh.limit.cpus) : "");
         setMem(sh?.limit?.mem ?? "");
         setGpus(sh?.limit?.gpus ?? "");
@@ -276,7 +307,7 @@ function LaunchCard({
 
   // 面板上的输入 → 后端的 Sharing。空字段一律不写进 team.yaml。
   const buildSharing = (): Sharing => {
-    if (iso !== "container") return { ...DEFAULT_SHARING };
+    if (iso === "account") return { ...DEFAULT_SHARING };
     const n = parseFloat(cpus);
     const limit: ShareLimit = {};
     if (cpus.trim() && Number.isFinite(n) && n > 0) limit.cpus = n;
@@ -284,7 +315,7 @@ function LaunchCard({
     if (gpus.trim()) limit.gpus = gpus.trim();
     const has = limit.cpus != null || !!limit.mem || !!limit.gpus;
     return {
-      isolation: "container",
+      isolation: iso,
       image: "",
       limit: has ? limit : null,
       data: dsets
@@ -429,26 +460,60 @@ function LaunchCard({
               <div className="share-t iso-t">
                 这些档位<strong>怎么兑现</strong>：
               </div>
-              <div className="seg sm iso-seg">
-                <button className={iso === "account" ? "on" : ""} onClick={() => setIso("account")}>
-                  裸机账号
-                </button>
-                <button className={iso === "container" ? "on" : ""} onClick={() => setIso("container")}>
-                  一人一容器
-                </button>
-              </div>
-              <div className="iso-hint">
-                {iso === "account" ? (
-                  <>每人一个宿主账号（无 sudo / 有 sudo 按档定）。简单，但<strong>没有资源限额</strong>，
-                  一个人能占满整台机，也看得见你的目录。</>
+
+              {/* 那台机的实际能力 —— 不可用的档位灰掉并说清缺什么，别等下发才报错 */}
+              <div className="caps-bar">
+                {capsBusy ? <span className="caps-probing">正在看 {s.name} 支持什么…</span> : caps ? (
+                  <>
+                    <span className={"caps-chip" + (caps.os === "linux" ? " ok" : "")}>{caps.os === "linux" ? (caps.distro || "linux") : caps.os}</span>
+                    <span className={"caps-chip" + (caps.rootful ? " ok" : "")}>{caps.rootful ? "有 root" : "无 root"}</span>
+                    <span className={"caps-chip" + (caps.docker_running ? " ok" : "")}>docker {caps.docker_running ? "运行中" : caps.docker ? "未运行" : "未装"}</span>
+                    {caps.podman && <span className="caps-chip ok">podman</span>}
+                    {caps.gpu && <span className="caps-chip ok">GPU</span>}
+                  </>
                 ) : (
-                  <>每人一个独立容器：档位逐人兑现、配额逐人生效、爆炸半径只有他自己。
-                  他 SSH 进来直接落进自己的容器，<strong>拿不到宿主 shell</strong>，看不见你的目录。
-                  需要这台机装了 docker。</>
+                  <button className="btn subtle sm" onClick={probe}>探测这台机支持什么</button>
                 )}
               </div>
 
-              {iso === "container" && (
+              <div className="seg sm iso-seg">
+                {ISOS.map((o) => {
+                  const blocked = o.why(caps);
+                  return (
+                    <button
+                      key={o.v}
+                      className={iso === o.v ? "on" : ""}
+                      disabled={!!blocked}
+                      title={blocked || undefined}
+                      onClick={() => setIso(o.v)}
+                    >
+                      {o.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {isoBlocked(iso) && <div className="import-err">{isoBlocked(iso)}</div>}
+              {caps?.install_hint && <pre className="caps-hint">{caps.install_hint}</pre>}
+
+              <div className="iso-hint">
+                {iso === "account" && (
+                  <>每人一个宿主账号（无 sudo / 有 sudo 按档定）。简单，但<strong>没有资源限额</strong>，
+                  一个人能占满整台机，也看得见你的目录。需要这台机的 root。</>
+                )}
+                {iso === "container" && (
+                  <>每人一个独立容器：档位逐人兑现、配额逐人生效、爆炸半径只有他自己。
+                  他 SSH 进来直接落进自己的容器，<strong>拿不到宿主 shell</strong>，看不见你的目录。
+                  需要这台机的 root + docker。</>
+                )}
+                {iso === "rootless" && (
+                  <>同样一人一容器，但<strong>全程在你自己的普通账号里</strong> —— 不建宿主账号、不碰
+                  <code> /etc</code>、不需要 sudo。队友直连他自己容器里的 sshd（<strong>各占一个高位端口</strong>，
+                  app 会自动填给他们）。你只是这台机的普通用户也能贡献它。
+                  代价：做不到档 0「借道」，也没有父资源池（限额只到逐容器）。</>
+                )}
+              </div>
+
+              {iso !== "account" && (
                 <div className="iso-box">
                   <div className="grant-row">
                     <span className="grant-role">借出上限</span>
@@ -459,9 +524,14 @@ function LaunchCard({
                     </div>
                   </div>
                   <div className="iso-note">
-                    这是你<strong>最多借出多少</strong> —— 落成一个父 cgroup 池，所有借用容器挂它下面，
-                    开多少个容器加起来都突破不了。随时可改、可设 0 收回。
-                    （GPU 是设备直通，不受父池约束：每个容器都会拿到你写的这组卡。）
+                    {iso === "container" ? (
+                      <>这是你<strong>最多借出多少</strong> —— 落成一个父 cgroup 池，所有借用容器挂它下面，
+                      开多少个容器加起来都突破不了。随时可改、可设 0 收回。
+                      （GPU 是设备直通，不受父池约束：每个容器都会拿到你写的这组卡。）</>
+                    ) : (
+                      <>免 root 下建不了父 cgroup 池（要 root），所以这是<strong>每个容器各自的上限</strong> ——
+                      N 个人最多能占到 N 倍。要硬上限得用要 root 的模式。</>
+                    )}
                   </div>
 
                   <div className="grant-row">

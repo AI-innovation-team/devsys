@@ -635,6 +635,11 @@ fn fold_team_into_store(state: &AppState, path: &str) -> Result<LoadTeamResult, 
         .collect();
     list.retain(|s| !s.source.starts_with("team:"));
 
+    // 免 root 模式下我连的是「我自己那个容器的端口」,不是 22。端口按 team.yaml 算
+    // (与下发侧同一个纯函数),用户名就是我的成员名 —— 容器里的账号是按成员名建的。
+    let me = ghauth::session(&state.dir).login;
+    let me = if me.is_empty() { None } else { Some(team::slug_login(&me)) };
+
     let mut skipped = Vec::new();
     let mut added = 0usize;
     for m in &view.machines {
@@ -643,12 +648,19 @@ fn fold_team_into_store(state: &AppState, path: &str) -> Result<LoadTeamResult, 
             continue;
         }
         let has_secret = *prev.get(&m.name).unwrap_or(&false);
+        let (port, username) = match (m.sharing.is_rootless(), &me) {
+            (true, Some(my)) => match view.rootless_port(m, my) {
+                Some(p) => (p, my.clone()),
+                None => (m.port, m.username.clone()), // 这台机没给我开档
+            },
+            _ => (m.port, m.username.clone()),
+        };
         list.push(store::Server {
             name: m.name.clone(),
             host: m.host.clone(),
-            port: m.port,
+            port,
             jump: m.jump.clone(),
-            username: m.username.clone(),
+            username,
             auth: "password".into(),
             transport: m.transport.clone(),
             source: src.clone(),
@@ -1058,17 +1070,93 @@ async fn provision_apply(
     }
 
     let (target, secret, jumps) = resolve_conn(&state, &server)?;
-    // 脚本经 stdin 喂给 sh，避免超长命令行；sudo -n 需免密，否则请用 root 凭据。
-    let cmd = format!(
-        "sudo -n sh -s <<'DEVSYS_EOF'\n{}\nDEVSYS_EOF\n",
-        plan.script
-    );
+    // 脚本经 stdin 喂给 sh，避免超长命令行。
+    // 免 root 模式**必须以普通账号跑**（它自己也会拒绝 uid 0）—— 别给它套 sudo；
+    // 另两种模式要 root，`sudo -n` 需免密，否则请用 root 凭据连这台机。
+    let cmd = if plan.isolation == "rootless" {
+        format!("sh -s <<'DEVSYS_EOF'\n{}\nDEVSYS_EOF\n", plan.script)
+    } else {
+        format!("sudo -n sh -s <<'DEVSYS_EOF'\n{}\nDEVSYS_EOF\n", plan.script)
+    };
     let out = ssh::exec(target, secret, jumps, cmd, tn.socks_addr()).await?;
     Ok(ProvisionResult {
         ok: out.code == 0,
         code: out.code,
         output: out.output,
     })
+}
+
+// ── 探测被共享机的能力 ──────────────────────────────────
+// 「选了一人一容器 → 共享 → 推 git → 队友都看见了 → 最后下发才发现没装 docker」
+// 这个反馈来得太晚。共享**之前**就去那台机上看一眼，把三种兑现方式里哪些真能用说清楚。
+#[derive(Serialize, Default)]
+struct HostCaps {
+    os: String,      // linux | darwin | 其它
+    distro: String,  // ubuntu / debian / rocky …（装 docker 的命令按它给）
+    docker: bool,
+    docker_running: bool,
+    podman: bool,
+    rootful: bool, // 本身是 root 或有免密 sudo（要 root 的两种模式的前提）
+    systemd: bool, // 有它才有父 cgroup 池
+    gpu: bool,     // nvidia-smi 在
+    install_hint: String,
+}
+
+// 一次 SSH 把该问的全问完（每问一句都要重连的话，面板会卡很久）。
+const PROBE_SCRIPT: &str = r#"echo "os=$(uname -s)"
+. /etc/os-release 2>/dev/null; echo "distro=${ID:-unknown}"
+command -v docker >/dev/null 2>&1 && echo docker=1 || echo docker=0
+docker info >/dev/null 2>&1 && echo dockerd=1 || echo dockerd=0
+command -v podman >/dev/null 2>&1 && echo podman=1 || echo podman=0
+[ -d /run/systemd/system ] && echo systemd=1 || echo systemd=0
+{ [ "$(id -u)" -eq 0 ] || sudo -n true 2>/dev/null; } && echo rootful=1 || echo rootful=0
+command -v nvidia-smi >/dev/null 2>&1 && echo gpu=1 || echo gpu=0
+"#;
+
+#[tauri::command]
+async fn probe_host_caps(
+    state: State<'_, AppState>,
+    tn: State<'_, Arc<tailnet::Tailnet>>,
+    server: String,
+) -> Result<HostCaps, String> {
+    let (target, secret, jumps) = resolve_conn(&state, &server)?;
+    let out = ssh::exec(target, secret, jumps, PROBE_SCRIPT.into(), tn.socks_addr()).await?;
+
+    let mut c = HostCaps::default();
+    for line in out.output.lines() {
+        let Some((k, v)) = line.trim().split_once('=') else { continue };
+        let on = v == "1";
+        match k {
+            "os" => c.os = v.to_lowercase(),
+            "distro" => c.distro = v.trim_matches('"').to_lowercase(),
+            "docker" => c.docker = on,
+            "dockerd" => c.docker_running = on,
+            "podman" => c.podman = on,
+            "systemd" => c.systemd = on,
+            "rootful" => c.rootful = on,
+            "gpu" => c.gpu = on,
+            _ => {}
+        }
+    }
+    // 给命令而不是替他装 —— 不静默改别人的机器。
+    c.install_hint = if c.os != "linux" {
+        "下发脚本只支持 Linux（useradd / systemd / rootless 容器都是 Linux 的）。".into()
+    } else if !c.docker && !c.podman {
+        match c.distro.as_str() {
+            "ubuntu" | "debian" | "linuxmint" => {
+                "装 docker：curl -fsSL https://get.docker.com | sudo sh\n免 root 想用 podman：sudo apt install -y podman".into()
+            }
+            "rocky" | "centos" | "rhel" | "almalinux" | "fedora" => {
+                "装 docker：curl -fsSL https://get.docker.com | sudo sh\n免 root 想用 podman：sudo dnf install -y podman".into()
+            }
+            _ => "装 docker：curl -fsSL https://get.docker.com | sudo sh（或用你发行版的包管理器装 podman）".into(),
+        }
+    } else if c.docker && !c.docker_running {
+        "docker 装了但守护进程没跑：sudo systemctl enable --now docker".into()
+    } else {
+        String::new()
+    };
+    Ok(c)
 }
 
 // ── 内建 tailnet（tsnet sidecar）─────────────────────────
@@ -1476,6 +1564,7 @@ pub fn run() {
             team_git_clone,
             provision_preview,
             provision_apply,
+            probe_host_caps,
             tailnet_status,
             tailnet_up,
             tailnet_down,

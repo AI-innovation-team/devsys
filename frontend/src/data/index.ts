@@ -142,6 +142,7 @@ export interface DataSource {
 
   // ── 授权下发：让队友真能登进去（先 preview 看脚本，再 apply 执行）。档位按角色自动算 ──
   provisionPreview(teamPath: string, server: string): Promise<ProvisionPlan>;
+  probeHostCaps(server: string): Promise<HostCaps>;
   provisionApply(teamPath: string, server: string): Promise<ProvisionResult>;
 
   // ── team.yaml 的 git 同步（配置即代码：团队配置放 git）──
@@ -297,13 +298,32 @@ export interface ShareDataset {
   as?: string;    // 容器内路径（空 = 同 host）
   mode?: string;  // ro（默认）| rw
 }
+// account   裸机账号（要被共享机的 root）
+// container 一人一容器（要 root：宿主账号当门房 + docker）
+// rootless  一人一容器 · 免 root（全程在贡献者自己的普通账号里，每人一个高位端口）
+export type Isolation = "account" | "container" | "rootless";
 export interface Sharing {
-  isolation: "account" | "container";
-  image?: string;             // 空 = 用 app 现建的 devsys/base（带 tmux）
-  limit?: ShareLimit | null;  // 主人的借出上限 → 父 cgroup 池
+  isolation: Isolation;
+  image?: string;             // 空 = 用 app 现建的基础镜像（带 tmux；免 root 的还带 sshd）
+  limit?: ShareLimit | null;  // 主人的借出上限 → 父 cgroup 池（免 root 下只到逐容器）
   data?: ShareDataset[];      // 点名只读挂进来的数据集
+  port_base?: number | null;  // 免 root：每人一个高位端口，从这里往上排（默认 2200）
 }
 export const DEFAULT_SHARING: Sharing = { isolation: "account", image: "", limit: null, data: [] };
+
+// 被共享机的实际能力 —— 决定三种兑现方式里哪些真能用。共享**之前**就探，
+// 别等到下发那一步才告诉主人「这台机没装 docker」。
+export interface HostCaps {
+  os: string;
+  distro: string;
+  docker: boolean;
+  docker_running: boolean;
+  podman: boolean;
+  rootful: boolean; // 是 root 或有免密 sudo
+  systemd: boolean;
+  gpu: boolean;
+  install_hint: string;
+}
 
 // 授权下发计划：要在被共享机上以 root 跑的脚本（先给人看，再执行）。
 export interface ProvisionAccount {
@@ -314,6 +334,7 @@ export interface ProvisionAccount {
   mode: "forward" | "account" | "container"; // 这个人怎么被兑现
   container?: string;                         // 他的容器名（容器模式）
   limits?: string;                            // 限额人话
+  port?: number;                              // 免 root：他专属的高位端口
 }
 export interface ProvisionPlan {
   server: string;
@@ -321,7 +342,7 @@ export interface ProvisionPlan {
   any_sudo: boolean;
   script: string;
   warnings: string[];
-  isolation: "account" | "container";
+  isolation: Isolation;
   pool: string;        // 借出资源池（父 cgroup）人话；空 = 没设上限
   datasets: string[];  // 只读挂进容器的共享数据集
 }

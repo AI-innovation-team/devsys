@@ -280,6 +280,22 @@
 .iso-fields input:focus { outline: none; border-color: var(--accent); }
 .iso-note { font-size: 11.5px; line-height: 1.6; color: var(--text-faint); }
 .iso-note strong { color: var(--text-muted); font-weight: 600; }
+/* 被共享机的实际能力：哪几种兑现方式真能用 */
+.caps-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; min-height: 24px; }
+.caps-probing { font-size: 12px; color: var(--text-faint); }
+.caps-chip {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+  color: var(--text-muted); background: var(--surface-sunken); border: 1px solid var(--border-subtle);
+}
+.caps-chip.ok { color: var(--success-text); background: var(--success-soft); border-color: transparent; }
+.caps-hint {
+  margin-top: 8px; padding: 9px 11px; font-family: var(--font-mono); font-size: 11.5px;
+  line-height: 1.65; white-space: pre-wrap; word-break: break-all;
+  color: var(--text-muted); background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle); border-radius: 8px;
+}
+.iso-seg button:disabled { opacity: .38; cursor: not-allowed; }
+
 .prov-pool { font-size: 12.5px; line-height: 1.6; color: var(--text-muted); }
 .prov-pool strong { color: var(--text-strong); font-family: var(--font-mono); }
 

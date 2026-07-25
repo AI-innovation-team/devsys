@@ -124,6 +124,13 @@ pub struct Account {
     // 这个容器拿到的限额，人话（如 "8 核 · 32g · GPU all"）。空 = 不限。
     #[serde(skip_serializing_if = "String::is_empty")]
     pub limits: String,
+    // 免 root 模式下他专属的高位端口（容器里的 sshd 发布到宿主）。0 = 不适用。
+    #[serde(skip_serializing_if = "is_zero")]
+    pub port: u16,
+}
+
+fn is_zero(v: &u16) -> bool {
+    *v == 0
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -230,7 +237,10 @@ pub fn plan(view: &TeamView, server: &str) -> Result<ProvisionPlan, String> {
 
     let mut warnings = Vec::new();
     let cands = candidates(view, machine, &mut warnings)?;
-    if machine.sharing.is_container() {
+    if machine.sharing.is_rootless() {
+        let ports = view.rootless_ports(machine);
+        plan_rootless(server, &machine.sharing, cands, ports, warnings)
+    } else if machine.sharing.is_container() {
         plan_container(server, &machine.sharing, cands, warnings)
     } else {
         plan_account(server, cands, warnings)
@@ -246,7 +256,7 @@ fn plan_account(server: &str, cands: Vec<Cand>, mut warnings: Vec<String>) -> Re
         if c.tier == 0 {
             accounts.push(Account {
                 name: c.name.clone(), role: c.role.clone(), tier: 0, sudo: false,
-                mode: "forward".into(), container: String::new(), limits: String::new(),
+                mode: "forward".into(), container: String::new(), limits: String::new(), port: 0,
             });
             blocks.push(forward_block(c));
             continue;
@@ -254,7 +264,7 @@ fn plan_account(server: &str, cands: Vec<Cand>, mut warnings: Vec<String>) -> Re
         let sudo = c.tier >= 2;
         accounts.push(Account {
             name: c.name.clone(), role: c.role.clone(), tier: c.tier, sudo,
-            mode: "account".into(), container: String::new(), limits: String::new(),
+            mode: "account".into(), container: String::new(), limits: String::new(), port: 0,
         });
 
         // 幂等:账号已存在则不动;公钥已在则不重复追加。
@@ -345,46 +355,55 @@ echo "完成。"
 // · 身份到人 = 容器到人（担责链清晰）。成本低:镜像层共享，空闲容器≈免费。
 const BASE_IMAGE: &str = "devsys/base:1";
 
-fn plan_container(
-    server: &str,
-    sh: &Sharing,
-    cands: Vec<Cand>,
-    mut warnings: Vec<String>,
-) -> Result<ProvisionPlan, String> {
-    // ── 校验主人写的那几个值（它们都要拼进 root 脚本）──
-    let image = if sh.image.is_empty() { BASE_IMAGE.to_string() } else { sh.image.clone() };
+// 主人写进 team.yaml 的那几个值，校验后拼成 docker/podman 参数。
+// 它们都会进到在别人机器上执行的脚本里 —— 一律**拒绝**可疑输入，不做转义兜底。
+struct Flags {
+    image: String,
+    limits: String,      // --cpus/--memory/--gpus（docker 写法）
+    limits_nogpu: String, // 同上但不含 GPU（rootless 下 GPU 要按引擎换写法）
+    gpus: String,        // 主人声明的 GPU 值（原样）
+    update: String,      // docker update 能改的那部分
+    pool: String,        // 限额的人话（也是父池描述）
+    data: String,        // -v 挂载参数
+    datasets: Vec<String>,
+}
+
+fn sharing_flags(sh: &Sharing, default_image: &str, warnings: &mut Vec<String>) -> Result<Flags, String> {
+    let image = if sh.image.is_empty() { default_image.to_string() } else { sh.image.clone() };
     if !valid_image(&image) {
         return Err(format!("镜像名 {image:?} 不合法（只允许字母数字与 . _ - / : @）"));
     }
-    let mut limit_flags = String::new();
-    let mut update_flags = String::new();
-    let mut pool = String::new();
+    let (mut limits, mut update, mut gpus, mut pool) = (String::new(), String::new(), String::new(), String::new());
     if let Some(l) = &sh.limit {
         if let Some(c) = l.cpus {
             if !(c.is_finite() && c > 0.0 && c <= 4096.0) {
                 return Err(format!("借出上限 cpus={c} 不合法"));
             }
-            limit_flags.push_str(&format!(" --cpus {c:.2}"));
-            update_flags.push_str(&format!(" --cpus {c:.2}"));
+            limits.push_str(&format!(" --cpus {c:.2}"));
+            update.push_str(&format!(" --cpus {c:.2}"));
         }
         if !l.mem.is_empty() {
             if !valid_mem(&l.mem) {
                 return Err(format!("借出上限 mem={:?} 不合法（应形如 32g / 4096m）", l.mem));
             }
-            limit_flags.push_str(&format!(" --memory {}", l.mem));
-            update_flags.push_str(&format!(" --memory {}", l.mem));
+            limits.push_str(&format!(" --memory {}", l.mem));
+            update.push_str(&format!(" --memory {}", l.mem));
         }
         if !l.gpus.is_empty() {
             if !valid_gpus(&l.gpus) {
                 return Err(format!("借出上限 gpus={:?} 不合法（应形如 all / 2 / device=0,1）", l.gpus));
             }
-            limit_flags.push_str(&format!(" --gpus {}", l.gpus));
+            gpus = l.gpus.clone();
         }
         pool = limits_text(l);
     }
+    let limits_nogpu = limits.clone();
+    if !gpus.is_empty() {
+        limits.push_str(&format!(" --gpus {gpus}"));
+    }
 
-    // ── 点名共享的数据集（只读挂进每个容器）──
-    let mut data_flags = String::new();
+    // 点名共享的数据集（只读挂进每个容器）。
+    let mut data = String::new();
     let mut datasets = Vec::new();
     for d in &sh.data {
         let ShareData { host, mount_as, mode } = d;
@@ -393,12 +412,24 @@ fn plan_container(
             return Err(format!("共享数据集路径 {host:?} → {inner:?} 不合法（必须绝对路径，且不含空格/冒号/引号/..）"));
         }
         let ro = mode != "rw";
-        data_flags.push_str(&format!(" -v '{host}':'{inner}':{}", if ro { "ro" } else { "rw" }));
+        data.push_str(&format!(" -v '{host}':'{inner}':{}", if ro { "ro" } else { "rw" }));
         datasets.push(format!("{host} → {inner}（{}）", if ro { "只读" } else { "可写" }));
         if !ro {
             warnings.push(format!("数据集 {host} 是**可写**挂载 —— 借用者能改你的原始数据，确认这是你要的。"));
         }
     }
+    Ok(Flags { image, limits, limits_nogpu, gpus, update, pool, data, datasets })
+}
+
+fn plan_container(
+    server: &str,
+    sh: &Sharing,
+    cands: Vec<Cand>,
+    mut warnings: Vec<String>,
+) -> Result<ProvisionPlan, String> {
+    let f = sharing_flags(sh, BASE_IMAGE, &mut warnings)?;
+    let (image, limit_flags, update_flags, pool, data_flags, datasets) =
+        (f.image, f.limits, f.update, f.pool, f.data, f.datasets);
 
     let mut accounts = Vec::new();
     let mut blocks = Vec::new();
@@ -408,7 +439,7 @@ fn plan_container(
         if c.tier == 0 {
             accounts.push(Account {
                 name: c.name.clone(), role: c.role.clone(), tier: 0, sudo: false,
-                mode: "forward".into(), container: String::new(), limits: String::new(),
+                mode: "forward".into(), container: String::new(), limits: String::new(), port: 0,
             });
             blocks.push(forward_block(c));
             continue;
@@ -424,7 +455,7 @@ fn plan_container(
         };
         accounts.push(Account {
             name: c.name.clone(), role: c.role.clone(), tier: c.tier, sudo,
-            mode: "container".into(), container: cname.clone(), limits: pool.clone(),
+            mode: "container".into(), container: cname.clone(), limits: pool.clone(), port: 0,
         });
         shelled.push(c.name.clone());
 
@@ -652,6 +683,244 @@ fi
     })
 }
 
+// ── 兑现方式 ③：一人一容器 · 免 root（v2）─────────────────
+//
+// 为什么要有这一档:①②都要被共享机的 root。可校园里绝大多数人对实验室 GPU 服务器
+// **只有一个普通账号** —— 「自助贡献机器」如果非管理员不可,就等于只服务得了机器主人。
+//
+// 免 root 的关键换法:**队友不登宿主账号,直连他自己容器里的 sshd**（各占一个高位端口）。
+// 于是 useradd / 改 sshd / 写 /etc 这些要 root 的事一件都不用做,全程在贡献者
+// 自己的普通账号里(rootless podman 优先,回退 rootless docker)。
+//
+// 换来的额外性质:rootless 下容器 root 经 userns 映射到**你这个普通用户**,
+// 所以即便档 2 也拿不到宿主 root —— 比要 root 的 ② 反而更安全。
+const BASE_SSH_IMAGE: &str = "devsys/base-ssh:1";
+
+fn plan_rootless(
+    server: &str,
+    sh: &Sharing,
+    cands: Vec<Cand>,
+    ports: Vec<(String, u16)>,
+    mut warnings: Vec<String>,
+) -> Result<ProvisionPlan, String> {
+    let f = sharing_flags(sh, BASE_SSH_IMAGE, &mut warnings)?;
+    let port_of = |n: &str| ports.iter().find(|(m, _)| m == n).map(|(_, p)| *p);
+
+    let mut accounts = Vec::new();
+    let mut blocks = Vec::new();
+    let mut skipped_forward = 0usize;
+
+    for c in &cands {
+        if c.tier == 0 {
+            // 免 root 起不了宿主账号 → 档 0「纯跳板」在这一档无法兑现，明说而不是假装。
+            skipped_forward += 1;
+            continue;
+        }
+        let Some(port) = port_of(&c.name) else { continue };
+        let cname = format!("devsys-{}", c.name);
+        let sudo = c.tier >= 2;
+        // 档 2 在 rootless 下仍只等于「贡献者本人的权限」（userns 兜底），不是宿主 root。
+        let sec = if sudo {
+            " --privileged -v '/':'/host'".to_string()
+        } else {
+            " --security-opt no-new-privileges --pids-limit 4096".to_string()
+        };
+        accounts.push(Account {
+            name: c.name.clone(),
+            role: c.role.clone(),
+            tier: c.tier,
+            sudo,
+            mode: "container".into(),
+            container: cname.clone(),
+            limits: f.pool.clone(),
+            port,
+        });
+
+        blocks.push(format!(
+            r#"
+# ── {name}（{role}，档 {tier} · 容器 {cname} · 端口 {port}）──────────────
+C={cname}
+PORT={port}
+# 端口变了（有人离队/加入会让排位前移）就重建 —— 否则队友会连到别人的容器上。
+if $ENG inspect "$C" >/dev/null 2>&1 && [ -z "$($ENG ps -a --filter "name=^$C$" --filter "label=devsys.port=$PORT" -q)" ]; then
+  echo "  $C 的端口已变 —— 重建（家目录卷保留）"
+  $ENG rm -f "$C" >/dev/null 2>&1 || true
+fi
+$ENG volume inspect '{vol}' >/dev/null 2>&1 || $ENG volume create '{vol}' >/dev/null
+$ENG volume inspect '{sshvol}' >/dev/null 2>&1 || $ENG volume create '{sshvol}' >/dev/null
+if $ENG inspect "$C" >/dev/null 2>&1; then
+  echo "  容器 $C 已在 —— 更新限额"
+  $ENG update{update} "$C" >/dev/null 2>&1 || echo "  ⚠ 限额更新失败（换镜像/换挂载需先 $ENG rm -f $C 再重跑）"
+  $ENG start "$C" >/dev/null 2>&1 || true
+elif $ENG run -d --name "$C" --restart unless-stopped --hostname '{name}-{server}' \
+       --label "devsys.port=$PORT" -p "$PORT":22 \
+       -v '{vol}':'/home/{name}' -v '{sshvol}':'/etc/ssh'{limits} $GPUARG{sec}{data} \
+       '{image}' >/dev/null 2>&1; then
+  echo "  已建容器 $C（端口 $PORT）"
+else
+  # rootless 下 CPU/内存 cgroup 控制器默认没委派给普通用户 —— 带限额会直接起不来。
+  # 宁可起来但不限额，也别让贡献者卡死在这里；但必须**说清楚限额没生效**。
+  echo "  ⚠ 带限额启动失败 —— 改为**不限额**启动（rootless 的 cgroup 控制器没委派给你）"
+  echo "     让机器管理员做一次即可开启限额："
+  echo "     mkdir -p /etc/systemd/system/user@.service.d && printf '[Service]\nDelegate=cpu cpuset io memory pids\n' > /etc/systemd/system/user@.service.d/delegate.conf && systemctl daemon-reload"
+  $ENG rm -f "$C" >/dev/null 2>&1 || true
+  $ENG run -d --name "$C" --restart unless-stopped --hostname '{name}-{server}' \
+    --label "devsys.port=$PORT" -p "$PORT":22 \
+    -v '{vol}':'/home/{name}' -v '{sshvol}':'/etc/ssh' $GPUARG{sec}{data} \
+    '{image}' >/dev/null && echo "  已建容器 $C（端口 $PORT，⚠ 无限额）"
+fi
+# 容器里建这个人 + 装他的公钥（每次覆盖 → 队友换钥匙重跑一次就生效）
+$ENG exec -u 0 "$C" sh -c "id -u '{name}' >/dev/null 2>&1 || useradd -m -s /bin/bash '{name}'" >/dev/null 2>&1 \
+  || echo "  ⚠ 容器内建用户失败（镜像里没有 useradd?）"
+$ENG exec -u 0 "$C" sh -c "install -d -m 700 -o '{name}' -g '{name}' '/home/{name}/.ssh' && printf '%s\n' '{key}' > '/home/{name}/.ssh/authorized_keys' && chmod 600 '/home/{name}/.ssh/authorized_keys' && chown '{name}':'{name}' '/home/{name}/.ssh/authorized_keys'" >/dev/null \
+  && echo "  已装公钥 {name}"
+{sudo_in}"#,
+            name = c.name,
+            role = c.role,
+            tier = c.tier,
+            key = c.key,
+            cname = cname,
+            port = port,
+            server = server,
+            vol = format!("devsys-{}-home", c.name),
+            sshvol = format!("devsys-{}-sshd", c.name),
+            image = f.image,
+            limits = f.limits_nogpu,
+            update = f.update,
+            sec = sec,
+            data = f.data,
+            sudo_in = if sudo {
+                format!(
+                    "$ENG exec -u 0 \"$C\" sh -c \"command -v sudo >/dev/null 2>&1 && printf '%s ALL=(ALL) NOPASSWD:ALL\\n' '{n}' > /etc/sudoers.d/devsys && chmod 440 /etc/sudoers.d/devsys\" >/dev/null 2>&1 || true\necho \"  {n}：档 2 —— 容器内 sudo + 挂载宿主 /host（**仍受你这个账号的权限约束**，不是宿主 root）\"\n",
+                    n = c.name
+                )
+            } else {
+                format!("echo \"  {n}：档 1 —— 容器内无特权、限额内跑、看不见宿主目录\"\n", n = c.name)
+            },
+        ));
+    }
+
+    let any_sudo = accounts.iter().any(|a| a.sudo);
+    if accounts.is_empty() {
+        warnings.push("没有任何可下发的容器 —— 要么无成员获此机授权，要么成员缺公钥。队友仍登不进来。".into());
+    }
+    if skipped_forward > 0 {
+        warnings.push(format!(
+            "有 {skipped_forward} 位成员是**档 0（纯跳板）** —— 免 root 模式建不了宿主账号，做不到「借道」，已跳过。\
+             这台机要当跳板给队友用，得用「裸机账号」或「一人一容器」（都需要 root）。"
+        ));
+    }
+    warnings.push(
+        "免 root 模式下队友连的是 `<主机>:<各自端口>`，**不是 22 端口** —— app 会自动按 team.yaml 算出端口填进他们的服务器列表。手工 ssh 要自己带 -p。"
+            .into(),
+    );
+    warnings.push(
+        "容器归你的用户会话所有:脚本会试着开 linger（`loginctl enable-linger`），否则你一登出容器就被杀。开不了的话让管理员执行一次。"
+            .into(),
+    );
+    if !accounts.is_empty() {
+        warnings.push(
+            "这些端口绑在**所有网卡**上（rootless 拿不到 tailnet 网卡做定向绑定）—— 这台机若有公网 IP，端口就暴露在公网。\
+             容器里的 sshd 只认公钥、禁密码，但仍建议靠防火墙或 tailnet ACL 收口。"
+                .into(),
+        );
+    }
+    if f.pool.is_empty() {
+        warnings.push("你没设**借出上限** —— 容器不限 CPU/内存，一个人仍可能占满整台机。".into());
+    } else {
+        warnings.push(
+            "免 root 下**没有父 cgroup 池**（建 systemd slice 要 root）：限额是逐容器的，N 个人最多能占到 N 倍。要硬上限就得用要 root 的模式。"
+                .into(),
+        );
+    }
+    if any_sudo {
+        warnings.push("有成员是**档 2**：特权容器 + 挂载宿主 `/host`。rootless 下这仍被 userns 兜住（等于你这个账号的权限，不是宿主 root），但你自己的文件对他全开。".into());
+    }
+    if !f.gpus.is_empty() {
+        warnings.push("GPU 在 rootless 下要 podman + CDI（`nvidia-ctk cdi generate`）或配好 rootless 的 nvidia-container-toolkit；脚本会自动按引擎选写法，起不来会退回无 GPU 并提示。".into());
+    }
+
+    let script = format!(
+        r#"#!/bin/sh
+# DevSys 授权下发 —— 服务器 {server}（隔离方式：一人一容器 · 免 root）
+# 由 app 生成，**用你自己的普通账号执行** —— 不需要 sudo，不碰 /etc，不建宿主账号。
+#
+# 换法:队友不登宿主账号，而是直连他自己容器里的 sshd（每人一个高位端口）。
+# 于是「贡献一台机」的门槛从「我是这台机的管理员」降到「我在这台机上有个账号」。
+set -e
+if [ "$(id -u)" -eq 0 ]; then
+  echo "别用 root 跑这个 —— 免 root 模式的意义就是跑在你自己的账号里" >&2; exit 1
+fi
+ENG=podman
+command -v podman >/dev/null 2>&1 || ENG=docker
+command -v "$ENG" >/dev/null 2>&1 || {{ echo "没找到 podman 也没找到 docker —— 装一个（推荐 podman，天生 rootless）" >&2; exit 1; }}
+$ENG info >/dev/null 2>&1 || {{ echo "$ENG 跑不起来（rootless 没初始化?试 '$ENG system migrate' 或让管理员配 subuid/subgid）" >&2; exit 1; }}
+echo "下发到 {server}（引擎 $ENG，免 root）："
+# 登出后容器要继续活着 —— 没有 linger，你一断开 SSH 容器就被 systemd 收走。
+loginctl enable-linger "$(id -un)" >/dev/null 2>&1 \
+  && echo "  已开 linger（登出后容器继续跑）" \
+  || echo "  ⚠ 开 linger 失败 —— 你登出后容器可能被杀，让管理员跑 loginctl enable-linger $(id -un)"
+# GPU：podman 走 CDI，docker 走 --gpus
+GPUARG=""
+{gpu_block}{image_block}{blocks}
+echo "完成。队友各自连 {server}:<他的端口>，落在自己的容器里。"
+"#,
+        server = server,
+        gpu_block = if f.gpus.is_empty() {
+            String::new()
+        } else {
+            format!(
+                r#"if [ "$ENG" = podman ]; then
+  GPUARG="--device nvidia.com/gpu={gpus}"
+else
+  GPUARG="--gpus {gpus}"
+fi
+"#,
+                gpus = f.gpus
+            )
+        },
+        image_block = if sh.image.is_empty() {
+            format!(
+                r#"# ── 基础镜像（sshd + tmux —— 队友直连它，工作区的持久会话也靠里面的 tmux）──
+if $ENG image inspect '{image}' >/dev/null 2>&1; then
+  echo "  基础镜像 {image} 已在"
+else
+  echo "  构建基础镜像 {image}（首次较慢）…"
+  $ENG build -t '{image}' - <<'DEVSYS_DOCKERFILE'
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bash tmux git curl ca-certificates sudo openssh-server openssh-client python3 less vim-tiny \
+    && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_* \
+    && mkdir -p /run/sshd /etc/ssh/sshd_config.d \
+    && printf 'PasswordAuthentication no\nPermitRootLogin no\nX11Forwarding no\n' > /etc/ssh/sshd_config.d/10-devsys.conf
+CMD ["sh","-c","ssh-keygen -A >/dev/null 2>&1; exec /usr/sbin/sshd -D -e"]
+DEVSYS_DOCKERFILE
+fi
+"#,
+                image = f.image
+            )
+        } else {
+            format!(
+                "echo \"  用主人指定的镜像 {image}（**必须自带 sshd 并以它为 CMD**，否则队友连不进去）\"\n$ENG image inspect '{image}' >/dev/null 2>&1 || $ENG pull '{image}'\n",
+                image = f.image
+            )
+        },
+        blocks = blocks.join(""),
+    );
+
+    Ok(ProvisionPlan {
+        server: server.into(),
+        accounts,
+        any_sudo,
+        script,
+        warnings,
+        isolation: "rootless".into(),
+        pool: f.pool,
+        datasets: f.datasets,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,6 +962,7 @@ mod tests {
             image: String::new(),
             limit: Some(ShareLimit { cpus: Some(8.0), mem: "32g".into(), gpus: "all".into() }),
             data: vec![ShareData { host: "/data/imagenet".into(), mount_as: String::new(), mode: "ro".into() }],
+            port_base: None,
         }
     }
 
@@ -895,6 +1165,126 @@ mod tests {
         assert!(!p.script.contains("usermod -s /usr/local/bin/devsys-enter 'dan'"));
     }
 
+    // ── 免 root 模式（一人一容器 · 不需要被共享机的 root）────
+
+    fn rootless_sharing() -> Sharing {
+        Sharing { isolation: "rootless".into(), ..container_sharing() }
+    }
+
+    // ★ 全程不碰 root:不 useradd、不写 /etc、不改 sshd。队友直连容器里的 sshd。
+    #[test]
+    fn rootless_never_touches_host_root() {
+        let v = view_sh(
+            &[("core", 2), ("member", 1)],
+            &[("alice", KEY_A, "core"), ("bob", KEY_A, "member")],
+            rootless_sharing(),
+        );
+        let p = plan(&v, "gpu").unwrap();
+        assert_eq!(p.isolation, "rootless");
+        // 宿主上一个 root 动作都不该有。注意「容器里的 /etc」是合法的 ——
+        // 它在 `$ENG exec` 里，属于容器自己的文件系统，跟宿主无关。
+        let mut in_dockerfile = false;
+        for (i, line) in p.script.lines().enumerate() {
+            let l = line.trim_start();
+            // Dockerfile 是**镜像**的构建指令，不是在宿主上执行的命令（里面的 sudo 只是个包名）。
+            if l.contains("DEVSYS_DOCKERFILE") {
+                in_dockerfile = !in_dockerfile;
+                continue;
+            }
+            if in_dockerfile || l.starts_with('#') || l.starts_with("echo ") || l.contains("$ENG exec") {
+                continue;
+            }
+            for forbidden in ["useradd ", "usermod ", "/etc/sudoers", "/etc/ssh/", "systemctl ", "sudo "] {
+                assert!(
+                    !l.contains(forbidden),
+                    "免 root 脚本第 {} 行动了宿主({forbidden:?}): {line}",
+                    i + 1
+                );
+            }
+        }
+        // 反过来:必须明确拒绝被 root 执行
+        assert!(p.script.contains(r#"if [ "$(id -u)" -eq 0 ]"#));
+    }
+
+    // ★ 每人一个高位端口,下发侧与消费侧用同一个纯函数算 —— 端口不一致会静默连不上。
+    #[test]
+    fn rootless_assigns_stable_per_member_ports() {
+        let v = view_sh(
+            &[("core", 2), ("member", 1)],
+            &[("alice", KEY_A, "core"), ("bob", KEY_A, "member")],
+            rootless_sharing(),
+        );
+        let m = v.machines.iter().find(|m| m.name == "gpu").unwrap();
+        // 成员按名排序 → alice 先、bob 后
+        assert_eq!(v.rootless_port(m, "alice"), Some(2200));
+        assert_eq!(v.rootless_port(m, "bob"), Some(2201));
+
+        let p = plan(&v, "gpu").unwrap();
+        let acct = |n: &str| p.accounts.iter().find(|a| a.name == n).unwrap();
+        assert_eq!(acct("alice").port, 2200);
+        assert_eq!(acct("bob").port, 2201);
+        assert!(p.script.contains("PORT=2200"));
+        assert!(p.script.contains("PORT=2201"));
+        assert!(p.script.contains(r#"-p "$PORT":22"#));
+        // 端口漂移要能自愈,否则队友会连到别人的容器
+        assert!(p.script.contains("label=devsys.port=$PORT"));
+    }
+
+    #[test]
+    fn rootless_port_base_is_configurable() {
+        let sh = Sharing { port_base: Some(9000), ..rootless_sharing() };
+        let v = view_sh(&[("member", 1)], &[("alice", KEY_A, "member")], sh);
+        let m = v.machines.iter().find(|m| m.name == "gpu").unwrap();
+        assert_eq!(v.rootless_port(m, "alice"), Some(9000));
+    }
+
+    // 免 root 建不了宿主账号 → 档 0「借道」做不到。必须明说,不能假装成功。
+    #[test]
+    fn rootless_cannot_do_tier0_and_says_so() {
+        let v = view_sh(
+            &[("member", 1), ("pub", 0)],
+            &[("alice", KEY_A, "member"), ("dan", KEY_A, "pub")],
+            rootless_sharing(),
+        );
+        let p = plan(&v, "gpu").unwrap();
+        assert!(p.accounts.iter().all(|a| a.name != "dan"));
+        assert!(p.warnings.iter().any(|w| w.contains("档 0") && w.contains("跳过")));
+    }
+
+    // 没有父 cgroup 池（建 slice 要 root）—— 限额只到逐容器，得说清 N 人 N 倍。
+    #[test]
+    fn rootless_has_no_parent_pool_and_says_so() {
+        let v = view_sh(&[("member", 1)], &[("alice", KEY_A, "member")], rootless_sharing());
+        let p = plan(&v, "gpu").unwrap();
+        assert!(!p.script.contains("cgroup-parent"));
+        assert!(!p.script.contains("devsys-shared.slice"));
+        assert!(p.warnings.iter().any(|w| w.contains("没有父 cgroup 池")));
+        // 限额仍逐容器下,且带限额失败要退回不限额并说明
+        assert!(p.script.contains("--cpus 8.00"));
+        assert!(p.script.contains("⚠ 无限额"));
+    }
+
+    // GPU 在 rootless 下写法按引擎分（podman 用 CDI）。
+    #[test]
+    fn rootless_gpu_uses_cdi_for_podman() {
+        let v = view_sh(&[("member", 1)], &[("alice", KEY_A, "member")], rootless_sharing());
+        let p = plan(&v, "gpu").unwrap();
+        assert!(p.script.contains("--device nvidia.com/gpu=all"));
+        assert!(p.script.contains("--gpus all"));
+    }
+
+    // 镜像必须自带 sshd —— 队友是直连它的。
+    #[test]
+    fn rootless_image_ships_sshd_and_tmux() {
+        let v = view_sh(&[("member", 1)], &[("alice", KEY_A, "member")], rootless_sharing());
+        let p = plan(&v, "gpu").unwrap();
+        assert!(p.script.contains("openssh-server"));
+        assert!(p.script.contains("tmux"));
+        assert!(p.script.contains("/usr/sbin/sshd -D -e"));
+        // 登出后容器要活着
+        assert!(p.script.contains("loginctl enable-linger"));
+    }
+
     // ── 注入防御：主人写的镜像/限额/路径也进 root 脚本 ──────
     #[test]
     fn rejects_injection_in_sharing_fields() {
@@ -949,6 +1339,12 @@ mod tests {
         // 不设上限 / 自带镜像的分支也要过
         let bare = Sharing { isolation: "container".into(), image: "nvcr.io/nvidia/pytorch:24.05-py3".into(), ..Default::default() };
         assert_valid_sh(&plan(&view_sh(&grants, &members, bare), "gpu").unwrap().script, "自带镜像");
+        // 免 root 的三个分支
+        assert_valid_sh(&plan(&view_sh(&grants, &members, rootless_sharing()), "gpu").unwrap().script, "免 root");
+        let rl_bare = Sharing { isolation: "rootless".into(), ..Default::default() };
+        assert_valid_sh(&plan(&view_sh(&grants, &members, rl_bare), "gpu").unwrap().script, "免 root · 无上限");
+        let rl_img = Sharing { isolation: "rootless".into(), image: "myorg/withsshd:1".into(), ..Default::default() };
+        assert_valid_sh(&plan(&view_sh(&grants, &members, rl_img), "gpu").unwrap().script, "免 root · 自带镜像");
     }
 
     // 眼睛看一遍生成的容器脚本:`cargo test dump_container_script -- --ignored --nocapture`
@@ -959,6 +1355,18 @@ mod tests {
             &[("core", 2), ("member", 1), ("pub", 0)],
             &[("alice", KEY_A, "core"), ("bob", KEY_A, "member"), ("dan", KEY_A, "pub")],
             container_sharing(),
+        );
+        println!("{}", plan(&v, "gpu").unwrap().script);
+    }
+
+    // `cargo test dump_rootless_script -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn dump_rootless_script() {
+        let v = view_sh(
+            &[("core", 2), ("member", 1), ("pub", 0)],
+            &[("alice", KEY_A, "core"), ("bob", KEY_A, "member"), ("dan", KEY_A, "pub")],
+            rootless_sharing(),
         );
         println!("{}", plan(&v, "gpu").unwrap().script);
     }

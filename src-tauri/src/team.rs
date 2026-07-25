@@ -139,7 +139,9 @@ pub struct Machine {
 // cgroup 层级保证子容器加起来永不超父上限，开多少容器都突破不了（责任为门:随时可改/设 0 收回）。
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
 pub struct Sharing {
-    // account（默认，v1 裸机账号）| container（v2 一人一容器）
+    // account（默认，v1 裸机账号，要 root）
+    // container（一人一容器，要 root：宿主账号当门房 + docker）
+    // rootless（一人一容器 · 免 root：全程在贡献者自己的普通账号里，每人一个高位端口）
     #[serde(default = "default_isolation", skip_serializing_if = "is_account")]
     pub isolation: String,
     // 容器基础镜像。空 = 用 app 现建的 devsys/base（带 bash/tmux/git，保证工作区持久化可用）。
@@ -151,17 +153,32 @@ pub struct Sharing {
     // 主人**点名**只读挂进来的数据集。没点名的宿主目录一律不可见（数据分层第②③层）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub data: Vec<ShareData>,
+    // 免 root 模式下每人一个高位端口，从这里往上排。默认 2200。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_base: Option<u16>,
 }
+
+// 免 root 模式的默认起始端口（>1024，普通用户就能绑）。
+pub const DEFAULT_PORT_BASE: u16 = 2200;
 
 impl Sharing {
     pub fn is_default(&self) -> bool {
-        *self == Sharing::default() || (self.is_account() && self.image.is_empty() && self.limit.is_none() && self.data.is_empty())
+        *self == Sharing::default()
+            || (self.is_account()
+                && self.image.is_empty()
+                && self.limit.is_none()
+                && self.data.is_empty()
+                && self.port_base.is_none())
     }
     pub fn is_account(&self) -> bool {
         self.isolation.is_empty() || self.isolation == "account"
     }
+    // 两种容器模式（要不要 root 不同，但「一人一容器」的心智一样）。
     pub fn is_container(&self) -> bool {
-        self.isolation == "container"
+        self.isolation == "container" || self.isolation == "rootless"
+    }
+    pub fn is_rootless(&self) -> bool {
+        self.isolation == "rootless"
     }
 }
 
@@ -271,6 +288,30 @@ impl TeamView {
 
     pub fn members_of_role(&self, role: &str) -> Vec<&ViewMember> {
         self.members.iter().filter(|m| m.role == role).collect()
+    }
+
+    // 免 root 模式:这台机上每个有 shell 权的成员各占一个高位端口（容器里的 sshd 发布到宿主）。
+    //
+    // **下发侧和消费侧必须用同一个纯函数算** —— 一边开 2201、一边连 2202 的话，
+    // 两头都不报错，只是永远连不上。所以这里不存状态、只按 team.yaml 算:
+    // 成员按名排序（merge 已保证），有 grant≥1 的依次占位。
+    // 代价:有人离队会让后面所有人的端口前移 —— 重跑一次下发即可（脚本会检出端口不符并重建）。
+    pub fn rootless_ports(&self, machine: &ViewMachine) -> Vec<(String, u16)> {
+        let base = machine.sharing.port_base.unwrap_or(DEFAULT_PORT_BASE);
+        let mut out = Vec::new();
+        for m in &self.members {
+            if matches!(self.effective_tier(machine, m), Some(t) if t >= 1) {
+                out.push((m.name.clone(), base.saturating_add(out.len() as u16)));
+            }
+        }
+        out
+    }
+
+    pub fn rootless_port(&self, machine: &ViewMachine, member: &str) -> Option<u16> {
+        self.rootless_ports(machine)
+            .into_iter()
+            .find(|(n, _)| n == member)
+            .map(|(_, p)| p)
     }
 }
 
