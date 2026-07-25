@@ -47,8 +47,7 @@ export function ProvisionModal({
             <div className="prov-title">授权下发 · {server}</div>
             <div className="prov-subt">
               按角色分配权限（RBAC）·{" "}
-              {plan?.isolation === "rootless" ? "一人一容器 · 免 root"
-                : plan?.isolation === "container" ? "一人一容器" : "裸机账号"}
+              {plan?.isolation === "container" ? "一人一容器" : "裸机账号（Linux 备选）"}
             </div>
           </div>
           <button className="btn subtle sm" onClick={onClose}><Icon name="x" /></button>
@@ -60,30 +59,25 @@ export function ProvisionModal({
           {plan && !result && (
             <>
               <p className="prov-intro">
-                {plan.isolation === "rootless" ? (
-                  <>将在 <strong>{server}</strong> 上给每位有权成员建<strong>一个独立容器</strong>，
-                  <strong>全程用你自己的普通账号</strong> —— 不建宿主账号、不碰 <code>/etc</code>、不需要 sudo。
-                  队友直连他自己容器里的 sshd（各占一个高位端口，见下）。</>
-                ) : plan.isolation === "container" ? (
-                  <>将在 <strong>{server}</strong> 上给每位有权成员建<strong>一个独立容器</strong>，
-                  并装入其公钥 —— 身份到人、容器到人。他 SSH 进来直接落进自己的容器，拿不到宿主 shell。
-                  凭据不出本机，装的只是公钥。</>
+                {plan.isolation === "container" ? (
+                  <>将在 <strong>{server}</strong> 上给每位有权成员建<strong>一个独立容器</strong>。
+                  下面每一条都是 <strong>OS 中立</strong>的 docker 命令（宿主 shell 不参与解释，
+                  所以 Linux / macOS / Windows 是同一套）；要写文件的那条内容走 SSH 通道，不进命令行。
+                  队友直连他自己容器里的 sshd，拿不到宿主 shell。</>
                 ) : (
                   <>将在 <strong>{server}</strong> 上为每位有权成员建立<strong>独立账号</strong>并装入其公钥
-                  —— 身份到人，权限按角色定（core 拿 sudo、member 受限）。凭据不出本机，装的只是公钥。</>
+                  —— 身份到人，权限按角色定。这一档只支持 Linux 且要 root。</>
                 )}
               </p>
 
               {plan.isolation !== "account" && (
                 <div className="prov-accts">
                   <div className="prov-sec-t">
-                    {plan.isolation === "rootless" ? "逐容器限额" : "借出资源池（父 cgroup）"}
+                    {plan.pool_kind === "divided" ? "逐容器限额（按人数分摊）" : "借出资源池（父 cgroup）"}
                   </div>
                   <div className="prov-pool">
                     {!plan.pool ? <>未设上限 —— 容器不限 CPU/内存。</>
-                      : plan.isolation === "rootless"
-                        ? <>每个容器各自上限 <strong>{plan.pool}</strong> —— 免 root 下没有父池，N 个人最多占到 N 倍。</>
-                        : <>所有借用容器挂在同一个池下，加起来永不超 <strong>{plan.pool}</strong>。</>}
+                      : <>上限 <strong>{plan.pool}</strong>。</>}
                   </div>
                   {plan.datasets.length > 0 && (
                     <>
@@ -126,11 +120,32 @@ export function ProvisionModal({
                 <div key={i} className="acl-note"><Icon name="alert" /><span>{w}</span></div>
               ))}
 
+              {/* 责任为门:先给主人看清要在他机器上跑什么，再执行。
+                  容器档是一份编号的命令清单（比一段 200 行的 shell 更可审）；
+                  裸机账号档仍是一段脚本。 */}
               <button className="prov-toggle" onClick={() => setShowScript((s) => !s)}>
                 <Icon name="chevron" className={showScript ? "flip" : ""} />
-                {showScript ? "收起脚本" : "查看将执行的脚本"}
+                {showScript ? "收起" : plan.isolation === "container"
+                  ? `查看将执行的 ${plan.commands.length} 条命令`
+                  : "查看将执行的脚本"}
               </button>
-              {showScript && <pre className="acl-json">{plan.script}</pre>}
+              {showScript && (plan.isolation === "container" ? (
+                <ol className="cmd-list">
+                  {plan.commands.map((c, i) => (
+                    <li key={i} className={c.optional ? "opt" : ""}>
+                      <div className="cmd-label">
+                        {c.label}
+                        {c.optional && <em>可失败</em>}
+                        {c.host_shell && <em>需宿主权限</em>}
+                      </div>
+                      <code>{c.argv.join(" ")}</code>
+                      {c.stdin && <div className="cmd-stdin">↳ 内容经 SSH 通道送入（{c.stdin.length} 字节），不进命令行</div>}
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <pre className="acl-json">{plan.script}</pre>
+              ))}
             </>
           )}
 
@@ -158,8 +173,8 @@ export function ProvisionModal({
               </button>
               <button className="btn subtle sm" onClick={onClose}>取消</button>
               <span className="save-note">
-                {plan?.isolation === "rootless"
-                  ? "用你自己的普通账号执行 —— 不需要 root"
+                {plan?.isolation === "container"
+                  ? "用你自己的账号执行 —— 不需要这台机的 root"
                   : "需要这台机的凭据具备 root / 免密 sudo"}
               </span>
             </>

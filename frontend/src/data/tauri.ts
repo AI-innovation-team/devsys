@@ -229,8 +229,8 @@ export const tauriData: DataSource = {
     return typeof r === "string" ? r : null;
   },
 
-  probeHostCaps(server: string) {
-    return invoke("probe_host_caps", { server }) as Promise<import("./index").HostCaps>;
+  probeHost(server: string) {
+    return invoke("probe_host", { server }) as Promise<import("./index").HostProbe>;
   },
 
   provisionPreview(teamPath: string, server: string) {

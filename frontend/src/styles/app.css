@@ -296,6 +296,23 @@
 }
 .iso-seg button:disabled { opacity: .38; cursor: not-allowed; }
 
+/* 将执行的命令清单（容器档的「先看再执行」） */
+.cmd-list { margin: 10px 0 0; padding: 0 0 0 26px; display: flex; flex-direction: column; gap: 10px; }
+.cmd-list li { font-size: 12px; color: var(--text-muted); }
+.cmd-list li.opt { opacity: .62; }
+.cmd-label { font-weight: 600; color: var(--text-strong); margin-bottom: 4px; }
+.cmd-label em {
+  font-style: normal; margin-left: 6px; font-size: 10px; font-weight: 700; letter-spacing: .03em;
+  padding: 1px 6px; border-radius: 999px; color: var(--text-faint); background: var(--surface-sunken);
+}
+.cmd-list code {
+  display: block; padding: 7px 10px; font-family: var(--font-mono); font-size: 11px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-all;
+  color: var(--text-strong); background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle); border-radius: 7px;
+}
+.cmd-stdin { margin-top: 4px; font-size: 11px; color: var(--text-faint); }
+
 .prov-pool { font-size: 12.5px; line-height: 1.6; color: var(--text-muted); }
 .prov-pool strong { color: var(--text-strong); font-family: var(--font-mono); }
 

@@ -649,7 +649,7 @@ fn fold_team_into_store(state: &AppState, path: &str) -> Result<LoadTeamResult, 
         }
         let has_secret = *prev.get(&m.name).unwrap_or(&false);
         let (port, username) = match (m.sharing.is_rootless(), &me) {
-            (true, Some(my)) => match view.rootless_port(m, my) {
+            (true, Some(my)) => match view.container_port(m, my) {
                 Some(p) => (p, my.clone()),
                 None => (m.port, m.username.clone()), // 这台机没给我开档
             },
@@ -1038,10 +1038,29 @@ async fn team_git_clone(url: String, dest: String) -> Result<String, String> {
 // 两步走：先 preview（纯生成，看得见要干什么），确认后 apply（经 SSH 以 root 执行）。
 // 我们**不静默改别人的机器** —— 责任为门：机器主人先看脚本，再点执行。
 
-// 生成下发脚本（不连接、不执行）。每个成员的档位按其角色 × 该机 grant 算出。
+// 生成下发计划。容器档要先探测这台机（同一份配置在 Linux 与 Docker Desktop 上
+// 该发的命令不一样），所以这里会连一次；裸机账号档不联网。
 #[tauri::command]
-fn provision_preview(team_path: String, server: String) -> Result<provision::ProvisionPlan, String> {
-    provision::plan(&load_view(&team_path)?, &server)
+async fn provision_preview(
+    state: State<'_, AppState>,
+    tn: State<'_, Arc<tailnet::Tailnet>>,
+    team_path: String,
+    server: String,
+) -> Result<provision::ProvisionPlan, String> {
+    let view = load_view(&team_path)?;
+    let containerized = view
+        .machines
+        .iter()
+        .find(|m| m.name == server)
+        .map(|m| m.sharing.is_container())
+        .unwrap_or(false);
+    if !containerized {
+        return provision::plan(&view, &server, None);
+    }
+    let (d, _) = provision::desired(&view, &server)?;
+    let names: Vec<String> = d.users.iter().map(|u| u.container.clone()).collect();
+    let o = observe(&state, &tn, &server, &d.image, &names).await?;
+    provision::plan(&view, &server, Some(&o))
 }
 
 #[derive(Serialize)]
@@ -1051,8 +1070,10 @@ struct ProvisionResult {
     output: String,
 }
 
-// 真执行：经 SSH（含 ProxyJump）在被共享机上以 root 跑下发脚本。
-// 要求这台机的凭据本身有 root/sudo 权（你是机器主人，本该有）。
+// 真执行。两条路：
+//   容器档   —— 逐条发 **OS 中立**的 docker 命令（宿主 shell 不参与解释，三平台同一套）；
+//               要写文件的那条把内容走 SSH stdin，命令行仍是裸 token。
+//   裸机账号 —— Linux only 的备选，仍是一段 root 脚本经 heredoc 喂给 sh。
 #[tauri::command]
 async fn provision_apply(
     state: State<'_, AppState>,
@@ -1060,115 +1081,215 @@ async fn provision_apply(
     team_path: String,
     server: String,
 ) -> Result<ProvisionResult, String> {
-    let plan = provision_preview(team_path, server.clone())?;
+    let plan = provision_preview(state.clone(), tn.clone(), team_path, server.clone()).await?;
     if plan.accounts.is_empty() {
         return Ok(ProvisionResult {
             ok: true,
             code: 0,
-            output: "没有需要下发的账号（无成员获此机 shell 授权，或成员缺公钥）。".into(),
+            output: "没有需要下发的（无成员获此机授权，或成员缺公钥）。".into(),
         });
     }
-
     let (target, secret, jumps) = resolve_conn(&state, &server)?;
-    // 脚本经 stdin 喂给 sh，避免超长命令行。
-    // 免 root 模式**必须以普通账号跑**（它自己也会拒绝 uid 0）—— 别给它套 sudo；
-    // 另两种模式要 root，`sudo -n` 需免密，否则请用 root 凭据连这台机。
-    let cmd = if plan.isolation == "rootless" {
-        format!("sh -s <<'DEVSYS_EOF'\n{}\nDEVSYS_EOF\n", plan.script)
-    } else {
-        format!("sudo -n sh -s <<'DEVSYS_EOF'\n{}\nDEVSYS_EOF\n", plan.script)
-    };
-    let out = ssh::exec(target, secret, jumps, cmd, tn.socks_addr()).await?;
-    Ok(ProvisionResult {
-        ok: out.code == 0,
-        code: out.code,
-        output: out.output,
-    })
+
+    if plan.isolation != "container" {
+        let cmd = format!("sudo -n sh -s <<'DEVSYS_EOF'\n{}\nDEVSYS_EOF\n", plan.script);
+        let out = ssh::exec(target, secret, jumps, cmd, tn.socks_addr()).await?;
+        return Ok(ProvisionResult { ok: out.code == 0, code: out.code, output: out.output });
+    }
+
+    // 逐条执行。非 optional 的一条失败就停 —— 半途而废好过继续把状态搅乱。
+    let mut log = String::new();
+    let mut code = 0u32;
+    for (i, c) in plan.commands.iter().enumerate() {
+        let line = if c.host_shell && plan_needs_sudo(&c.argv) {
+            format!("sudo -n {}", c.line())
+        } else {
+            c.line()
+        };
+        log.push_str(&format!("[{}/{}] {}\n  $ {line}\n", i + 1, plan.commands.len(), c.label));
+        let out = ssh::exec_stdin(
+            target.clone(),
+            secret.clone(),
+            jumps.clone(),
+            line,
+            c.stdin.as_ref().map(|s| s.as_bytes().to_vec()),
+            tn.socks_addr(),
+        )
+        .await?;
+        let trimmed = out.output.trim();
+        if !trimmed.is_empty() {
+            log.push_str(&format!("  {}\n", trimmed.replace('\n', "\n  ")));
+        }
+        if out.code != 0 {
+            if c.optional {
+                log.push_str(&format!("  ⚠ 跳过（退出码 {}，这条非必需）\n", out.code));
+            } else {
+                log.push_str(&format!("  ✗ 失败（退出码 {}）—— 已停在这里，后面的没执行。\n", out.code));
+                code = out.code;
+                break;
+            }
+        }
+    }
+    Ok(ProvisionResult { ok: code == 0, code, output: log })
 }
 
-// ── 探测被共享机的能力 ──────────────────────────────────
-// 「选了一人一容器 → 共享 → 推 git → 队友都看见了 → 最后下发才发现没装 docker」
-// 这个反馈来得太晚。共享**之前**就去那台机上看一眼，把三种兑现方式里哪些真能用说清楚。
-#[derive(Serialize, Default)]
-struct HostCaps {
-    os: String,      // linux | darwin | 其它
-    distro: String,  // ubuntu / debian / rocky …（装 docker 的命令按它给）
-    docker: bool,
-    docker_running: bool,
-    podman: bool,
-    rootful: bool, // 本身是 root 或有免密 sudo（要 root 的两种模式的前提）
-    systemd: bool, // 有它才有父 cgroup 池
-    gpu: bool,     // nvidia-smi 在
+// systemctl / loginctl 这几条要宿主权限；docker 那些不要。
+fn plan_needs_sudo(argv: &[String]) -> bool {
+    matches!(argv.first().map(|s| s.as_str()), Some("systemctl"))
+}
+
+// ── 探测:这台机现在是什么样 ─────────────────────────────
+//
+// **全部靠容器引擎自己回答**，不靠宿主 shell:
+//   `docker version` 的 Client OS/Arch = **宿主**操作系统（这是 Windows 上唯一能问出来的路子，
+//                                        `uname` 在 cmd.exe 里根本不存在）
+//   `docker info`    的 CPUs / Total Memory = 引擎能看到的盘子
+//                                        （Docker Desktop 上就是 VM 配额 = 外层父池）
+// 于是探测本身在三个平台上是同一套命令。Linux 专属的那两条（systemd / 免密 sudo）
+// 才用 `sh -c`，反正非 Linux 也不需要它们。
+async fn observe(
+    state: &State<'_, AppState>,
+    tn: &State<'_, Arc<tailnet::Tailnet>>,
+    server: &str,
+    image: &str,
+    containers: &[String],
+) -> Result<provision::Observed, String> {
+    let (target, secret, jumps) = resolve_conn(state, server)?;
+    let run = |cmd: String| {
+        let (t, s, j, sk) = (target.clone(), secret.clone(), jumps.clone(), tn.socks_addr());
+        async move { ssh::exec(t, s, j, cmd, sk).await }
+    };
+
+    let mut o = provision::Observed::default();
+    // 引擎:podman 优先（天生 rootless），退回 docker。
+    for eng in ["podman", "docker"] {
+        if let Ok(v) = run(format!("{eng} version")).await {
+            if v.code == 0 {
+                o.engine = eng.into();
+                for line in v.output.lines() {
+                    // Client 段的 "OS/Arch: darwin/arm64" 就是宿主系统
+                    if let Some(rest) = line.trim().strip_prefix("OS/Arch:") {
+                        if o.os.is_empty() {
+                            o.os = rest.trim().split('/').next().unwrap_or("").to_lowercase();
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+    if o.engine.is_empty() {
+        // 没有容器引擎:还是问一下系统，好给安装指引。
+        if let Ok(u) = run("uname -s".into()).await {
+            o.os = u.output.trim().to_lowercase();
+            if o.os == "darwin" || o.os.starts_with("linux") {
+                o.os = if o.os == "darwin" { "darwin".into() } else { "linux".into() };
+            }
+        }
+        if o.os.is_empty() {
+            o.os = "windows".into(); // uname 都没有，八成是 cmd.exe
+        }
+        return Ok(o);
+    }
+    if o.os == "mac" {
+        o.os = "darwin".into();
+    }
+
+    if let Ok(info) = run(format!("{} info", o.engine)).await {
+        for line in info.output.lines() {
+            let t = line.trim();
+            if let Some(v) = t.strip_prefix("CPUs:") {
+                o.ncpu = v.trim().parse().unwrap_or(0.0);
+            } else if let Some(v) = t.strip_prefix("Total Memory:") {
+                // "7.653GiB" / "15.6GiB"
+                let v = v.trim();
+                let num: String = v.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+                let g: f64 = num.parse().unwrap_or(0.0);
+                o.mem_mib = if v.contains("GiB") || v.contains("GB") {
+                    (g * 1024.0) as u64
+                } else {
+                    g as u64
+                };
+            } else if t.starts_with("Operating System:") {
+                o.desktop = t.contains("Docker Desktop");
+            } else if t == "rootless" || t.contains("rootless: true") {
+                o.rootless = true;
+            }
+        }
+    }
+    // podman machine 也是 VM（等价于 Docker Desktop 的处境）
+    if o.engine == "podman" && !o.os.is_empty() && o.os != "linux" {
+        o.desktop = true;
+    }
+
+    // 镜像在不在 / 每个容器现在什么状态（含我们打的 devsys.stamp 标签）。
+    o.image_ready = run(format!("{} image inspect {image}", o.engine))
+        .await
+        .map(|r| r.code == 0)
+        .unwrap_or(false);
+    for name in containers {
+        let mut c = provision::ObservedContainer::default();
+        if let Ok(r) = run(format!("{} inspect --format {{{{.State.Running}}}} {name}", o.engine)).await {
+            c.exists = r.code == 0;
+            c.running = r.output.trim() == "true";
+        }
+        if c.exists {
+            if let Ok(r) = run(format!(
+                "{} inspect --format {{{{index .Config.Labels \"devsys.stamp\"}}}} {name}",
+                o.engine
+            ))
+            .await
+            {
+                c.stamp = r.output.trim().to_string();
+            }
+        }
+        o.containers.insert(name.clone(), c);
+    }
+
+    // Linux 专属:能不能建真父池（要 systemd + 宿主 root）。非 Linux 不必问。
+    if o.os == "linux" {
+        if let Ok(r) = run(
+            "sh -c '[ -d /run/systemd/system ] && echo systemd; { [ \"$(id -u)\" -eq 0 ] || sudo -n true 2>/dev/null; } && echo root; command -v nvidia-smi >/dev/null 2>&1 && echo gpu; true'".into(),
+        )
+        .await
+        {
+            o.systemd = r.output.contains("systemd");
+            o.host_root = r.output.contains("root");
+            o.gpu = r.output.contains("gpu");
+        }
+    }
+    Ok(o)
+}
+
+// ── 探测:共享面板用（选模式之前就知道这台机支持什么）────
+// 与下发用的 observe 同一条路 —— 于是 Windows 上也能探（`uname` 在 cmd.exe 里不存在，
+// 但 `docker version` 在三个平台上都能问出宿主是什么）。
+#[derive(Serialize)]
+struct HostProbe {
+    #[serde(flatten)]
+    observed: provision::Observed,
     install_hint: String,
 }
 
-// 一次 SSH 把该问的全问完（每问一句都要重连的话，面板会卡很久）。
-const PROBE_SCRIPT: &str = r#"echo "os=$(uname -s)"
-. /etc/os-release 2>/dev/null; echo "distro=${ID:-unknown}"
-command -v docker >/dev/null 2>&1 && echo docker=1 || echo docker=0
-docker info >/dev/null 2>&1 && echo dockerd=1 || echo dockerd=0
-command -v podman >/dev/null 2>&1 && echo podman=1 || echo podman=0
-[ -d /run/systemd/system ] && echo systemd=1 || echo systemd=0
-{ [ "$(id -u)" -eq 0 ] || sudo -n true 2>/dev/null; } && echo rootful=1 || echo rootful=0
-command -v nvidia-smi >/dev/null 2>&1 && echo gpu=1 || echo gpu=0
-"#;
-
 #[tauri::command]
-async fn probe_host_caps(
+async fn probe_host(
     state: State<'_, AppState>,
     tn: State<'_, Arc<tailnet::Tailnet>>,
     server: String,
-) -> Result<HostCaps, String> {
-    let (target, secret, jumps) = resolve_conn(&state, &server)?;
-    let out = ssh::exec(target, secret, jumps, PROBE_SCRIPT.into(), tn.socks_addr()).await?;
-
-    let mut c = HostCaps::default();
-    for line in out.output.lines() {
-        let Some((k, v)) = line.trim().split_once('=') else { continue };
-        let on = v == "1";
-        match k {
-            "os" => c.os = v.to_lowercase(),
-            "distro" => c.distro = v.trim_matches('"').to_lowercase(),
-            "docker" => c.docker = on,
-            "dockerd" => c.docker_running = on,
-            "podman" => c.podman = on,
-            "systemd" => c.systemd = on,
-            "rootful" => c.rootful = on,
-            "gpu" => c.gpu = on,
-            _ => {}
-        }
-    }
+) -> Result<HostProbe, String> {
+    let o = observe(&state, &tn, &server, provision::BASE_IMAGE, &[]).await?;
     // 给命令而不是替他装 —— 不静默改别人的机器。
-    //
-    // 平台边界要说准:卡住 Linux 的**不是 docker，是宿主账号那套**（useradd / sudoers /
-    // systemd slice）。免 root 那档不碰宿主账号，所以在 macOS 上照样能跑 —— 只要有
-    // docker/podman。Windows 是另一回事:它的 SSH 默认 shell 不是 sh，脚本根本喂不进去。
-    c.install_hint = if c.os == "darwin" && !c.docker && !c.podman {
-        "这台 Mac 只能用「一人一容器 · 免 root」那一档（另两档要 useradd/systemd）。\n装容器引擎：brew install --cask docker（或 brew install podman && podman machine init）".into()
-    } else if c.os != "linux" && c.os != "darwin" {
-        format!("下发脚本目前只支持 Linux 与 macOS（探测到 {}）。Windows 上建议共享 WSL2 里的那套 Linux，而不是 Windows 本身。", c.os)
-    } else if !c.docker && !c.podman {
-        match c.distro.as_str() {
-            "ubuntu" | "debian" | "linuxmint" => {
-                "装 docker：curl -fsSL https://get.docker.com | sudo sh\n免 root 想用 podman：sudo apt install -y podman".into()
-            }
-            "rocky" | "centos" | "rhel" | "almalinux" | "fedora" => {
-                "装 docker：curl -fsSL https://get.docker.com | sudo sh\n免 root 想用 podman：sudo dnf install -y podman".into()
-            }
-            _ => "装 docker：curl -fsSL https://get.docker.com | sudo sh（或用你发行版的包管理器装 podman）".into(),
-        }
-    } else if c.docker && !c.docker_running {
-        if c.os == "darwin" {
-            "docker 装了但没在跑：打开 Docker Desktop（建议设成登录时自启）".into()
-        } else {
-            "docker 装了但守护进程没跑：sudo systemctl enable --now docker".into()
-        }
-    } else if c.os == "darwin" {
-        "macOS 只支持「一人一容器 · 免 root」那一档 —— 另两档要 useradd/systemd。".into()
-    } else {
+    let install_hint = if !o.engine.is_empty() {
         String::new()
+    } else {
+        match o.os.as_str() {
+            "darwin" => "装容器引擎：brew install --cask docker（或 brew install podman && podman machine init）".into(),
+            "windows" => "装 Docker Desktop（WSL2 后端）。GPU 要在 **Windows 侧**装 NVIDIA 驱动，别在 WSL 里再装 Linux 驱动。".into(),
+            "linux" => "装 docker：curl -fsSL https://get.docker.com | sudo sh\n想免 root：用你发行版的包管理器装 podman".into(),
+            other => format!("没见过的系统 {other} —— 下发需要 docker 或 podman。"),
+        }
     };
-    Ok(c)
+    Ok(HostProbe { observed: o, install_hint })
 }
 
 // ── 内建 tailnet（tsnet sidecar）─────────────────────────
@@ -1576,7 +1697,7 @@ pub fn run() {
             team_git_clone,
             provision_preview,
             provision_apply,
-            probe_host_caps,
+            probe_host,
             tailnet_status,
             tailnet_up,
             tailnet_down,

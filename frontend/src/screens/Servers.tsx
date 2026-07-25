@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Me, Server } from "../api";
 import {
   data, supportsLocalTopology, DEFAULT_SHARING,
-  type ServerInput, type SshHost, type Sharing, type ShareLimit, type Isolation, type HostCaps,
+  type ServerInput, type SshHost, type Sharing, type ShareLimit, type Isolation, type HostProbe,
 } from "../data";
 import { ImportModal } from "../components/ImportModal";
 import { ProvisionModal } from "../components/ProvisionModal";
@@ -232,9 +232,9 @@ function LaunchCard({
   const defaultTier = (r: string) => (r === "core" ? 2 : r === "pub" ? 0 : 1);
   const [grants, setGrants] = useState<Record<string, number>>({});
   // 「怎么关」= 隔离方式 + 借出上限 + 点名共享的数据集。与 grants（「开多少权」）正交。
-  const [iso, setIso] = useState<Isolation>("account");
+  const [iso, setIso] = useState<Isolation>("container");
   // 那台机到底支持哪几种兑现方式 —— 共享**之前**就探，别等下发才发现没装 docker。
-  const [caps, setCaps] = useState<HostCaps | null>(null);
+  const [caps, setCaps] = useState<HostProbe | null>(null);
   const [capsBusy, setCapsBusy] = useState(false);
   const [cpus, setCpus] = useState("");
   const [mem, setMem] = useState("");
@@ -253,34 +253,25 @@ function LaunchCard({
   // 于是「改授权」点了没反应（永远停在已共享那屏）。用这个标志把编辑态摘出来。
   const [editing, setEditing] = useState(false);
 
-  // 三档兑现方式。能不能用取决于那台机的实际能力（探测结果),不可用的直接灰掉并说清缺什么。
-  //
-  // 平台边界:卡住 Linux 的**不是 docker，是宿主账号那套**（useradd / sudoers / systemd
-  // slice）—— 前两档要它，所以只能 Linux。免 root 那档不碰宿主账号，**macOS 一样能跑**。
-  const ISOS: { v: Isolation; label: string; why: (c: HostCaps | null) => string }[] = [
-    {
-      v: "account", label: "裸机账号",
-      why: (c) => (!c ? "" : c.os !== "linux" ? "这一档要 useradd/sudoers，只支持 Linux" : !c.rootful ? "需要这台机的 root / 免密 sudo" : ""),
-    },
+  // 两种兑现方式。**容器是主线,三平台通吃**（Linux / macOS / Windows 只要有 docker/podman —— 
+  // 容器里永远是 Linux,宿主是什么无所谓）;裸机账号是 Linux-only 的备选,
+  // 因为它要 useradd/sudoers,而且在没有 cgroups 的系统上连限额都给不了。
+  const ISOS: { v: Isolation; label: string; why: (c: HostProbe | null) => string }[] = [
     {
       v: "container", label: "一人一容器",
-      why: (c) => (!c ? "" : c.os !== "linux" ? "门房要建宿主账号，只支持 Linux"
-        : !c.rootful ? "需要这台机的 root / 免密 sudo"
-        : !c.docker ? "这台机没装 docker" : !c.docker_running ? "docker 守护进程没在跑" : ""),
+      why: (c) => (!c ? "" : !c.engine ? "这台机没装 docker 也没装 podman" : ""),
     },
     {
-      v: "rootless", label: "一人一容器 · 免 root",
-      // 只要有容器引擎就行 —— 不碰宿主账号，所以 Linux / macOS 都可以。
-      why: (c) => (!c ? "" : c.os !== "linux" && c.os !== "darwin" ? `暂不支持 ${c.os}（Windows 建议共享 WSL2 里的 Linux）`
-        : !c.podman && !c.docker ? "这台机没装 podman 也没装 docker"
-        : c.os === "darwin" && !c.docker_running && !c.podman ? "Docker Desktop 没在跑" : ""),
+      v: "account", label: "裸机账号（备选）",
+      why: (c) => (!c ? "" : c.os !== "linux" ? `这一档要 useradd/sudoers，只支持 Linux（这台是 ${c.os}）`
+        : !c.host_root ? "需要这台机的 root / 免密 sudo" : ""),
     },
   ];
   const isoBlocked = (v: Isolation) => ISOS.find((i) => i.v === v)!.why(caps);
 
   const probe = async () => {
     setCapsBusy(true); setCaps(null);
-    try { setCaps(await data.probeHostCaps(s.name)); }
+    try { setCaps(await data.probeHost(s.name)); }
     catch { /* 连不上就不显示能力条，不打断共享 */ }
     finally { setCapsBusy(false); }
   };
@@ -300,7 +291,8 @@ function LaunchCard({
       if (m) {
         for (const r of roles) if (m.grants[r] !== undefined) g[r] = m.grants[r];
         const sh = m.sharing;
-        if (sh?.isolation === "container" || sh?.isolation === "rootless") setIso(sh.isolation);
+        // 老 team.yaml 里的 rootless 就是现在的 container（两档已合一）
+        if (sh?.isolation) setIso(sh.isolation === "account" ? "account" : "container");
         setCpus(sh?.limit?.cpus != null ? String(sh.limit.cpus) : "");
         setMem(sh?.limit?.mem ?? "");
         setGpus(sh?.limit?.gpus ?? "");
@@ -466,14 +458,22 @@ function LaunchCard({
                 这些档位<strong>怎么兑现</strong>：
               </div>
 
-              {/* 那台机的实际能力 —— 不可用的档位灰掉并说清缺什么，别等下发才报错 */}
+              {/* 那台机的实际现状 —— 不可用的档位灰掉并说清缺什么，别等下发才报错 */}
               <div className="caps-bar">
                 {capsBusy ? <span className="caps-probing">正在看 {s.name} 支持什么…</span> : caps ? (
                   <>
-                    <span className={"caps-chip" + (caps.os === "linux" ? " ok" : "")}>{caps.os === "linux" ? (caps.distro || "linux") : caps.os}</span>
-                    <span className={"caps-chip" + (caps.rootful ? " ok" : "")}>{caps.rootful ? "有 root" : "无 root"}</span>
-                    <span className={"caps-chip" + (caps.docker_running ? " ok" : "")}>docker {caps.docker_running ? "运行中" : caps.docker ? "未运行" : "未装"}</span>
-                    {caps.podman && <span className="caps-chip ok">podman</span>}
+                    <span className="caps-chip ok">{caps.os}</span>
+                    <span className={"caps-chip" + (caps.engine ? " ok" : "")}>
+                      {caps.engine || "无容器引擎"}{caps.rootless ? " · rootless" : ""}
+                    </span>
+                    {caps.desktop && <span className="caps-chip">容器在 VM 里</span>}
+                    {caps.ncpu > 0 && (
+                      <span className="caps-chip">
+                        引擎可见 {caps.ncpu} 核 / {(caps.mem_mib / 1024).toFixed(1)}G
+                        {caps.desktop ? "（VM 配额）" : ""}
+                      </span>
+                    )}
+                    {caps.host_root && <span className="caps-chip ok">有 root</span>}
                     {caps.gpu && <span className="caps-chip ok">GPU</span>}
                   </>
                 ) : (
@@ -501,21 +501,15 @@ function LaunchCard({
               {caps?.install_hint && <pre className="caps-hint">{caps.install_hint}</pre>}
 
               <div className="iso-hint">
-                {iso === "account" && (
-                  <>每人一个宿主账号（无 sudo / 有 sudo 按档定）。简单，但<strong>没有资源限额</strong>，
-                  一个人能占满整台机，也看得见你的目录。需要这台机的 root。</>
-                )}
-                {iso === "container" && (
+                {iso === "container" ? (
                   <>每人一个独立容器：档位逐人兑现、配额逐人生效、爆炸半径只有他自己。
-                  他 SSH 进来直接落进自己的容器，<strong>拿不到宿主 shell</strong>，看不见你的目录。
-                  需要这台机的 root + docker。</>
-                )}
-                {iso === "rootless" && (
-                  <>同样一人一容器，但<strong>全程在你自己的普通账号里</strong> —— 不建宿主账号、不碰
-                  <code> /etc</code>、不需要 sudo。队友直连他自己容器里的 sshd（<strong>各占一个高位端口</strong>，
-                  app 会自动填给他们）。你只是这台机的普通用户也能贡献它，
-                  <strong>也是三档里唯一能在 macOS 上跑的</strong>。
-                  代价：做不到档 0「借道」，也没有父资源池（限额只到逐容器）。</>
+                  队友直连他自己容器里的 sshd（<strong>各占一个高位端口</strong>，app 会自动填给他们），
+                  <strong>拿不到宿主 shell</strong>、看不见你的目录。
+                  <strong>三个平台通吃</strong> —— 容器里永远是 Linux，你的机器是什么无所谓；
+                  也不需要这台机的 root。</>
+                ) : (
+                  <>每人一个宿主账号（无 sudo / 有 sudo 按档定）。简单，但<strong>没有资源限额</strong>，
+                  一个人能占满整台机，也看得见你的目录。需要 Linux + root。</>
                 )}
               </div>
 

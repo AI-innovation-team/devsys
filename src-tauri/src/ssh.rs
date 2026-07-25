@@ -208,9 +208,28 @@ pub async fn exec(
     command: String,
     socks: Option<String>,
 ) -> Result<ExecOut, String> {
+    exec_stdin(target, target_secret, jumps, command, None, socks).await
+}
+
+// 带 stdin 的 exec。**这是 OS 中立的关键**:要往远端写一段脚本/配置时，命令本身保持
+// 纯 token（`docker exec -i C tee /path`），内容走 SSH 数据通道 ——
+// 宿主 shell 全程不参与解释，于是 sh / cmd.exe / PowerShell 都一样。
+// 以前靠 `sh -s <<'EOF'` heredoc，那是对宿主 shell 的硬依赖，Windows 上直接喂不进去。
+pub async fn exec_stdin(
+    target: Server,
+    target_secret: String,
+    jumps: Vec<(Server, String)>,
+    command: String,
+    stdin: Option<Vec<u8>>,
+    socks: Option<String>,
+) -> Result<ExecOut, String> {
     let conn = build_conn(&target, &target_secret, jumps, socks).await?;
     let mut channel = conn.handle.channel_open_session().await.map_err(e2s)?;
     channel.exec(true, command).await.map_err(e2s)?;
+    if let Some(data) = stdin {
+        channel.data(&data[..]).await.map_err(e2s)?;
+        channel.eof().await.map_err(e2s)?;
+    }
 
     let mut buf = Vec::new();
     let mut code: Option<u32> = None;

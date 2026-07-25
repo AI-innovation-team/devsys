@@ -290,25 +290,28 @@ impl TeamView {
         self.members.iter().filter(|m| m.role == role).collect()
     }
 
-    // 免 root 模式:这台机上每个有 shell 权的成员各占一个高位端口（容器里的 sshd 发布到宿主）。
+    // 容器档:这台机上每个获授权的成员各占一个高位端口（他容器里的 sshd 发布到宿主）。
+    // **档 0 也占一个** —— 它同样是个容器（只是里面那人没有 shell、公钥只放行转发），
+    // 这样「借道」在三个平台上都成立，不再依赖建宿主账号。
     //
     // **下发侧和消费侧必须用同一个纯函数算** —— 一边开 2201、一边连 2202 的话，
     // 两头都不报错，只是永远连不上。所以这里不存状态、只按 team.yaml 算:
-    // 成员按名排序（merge 已保证），有 grant≥1 的依次占位。
-    // 代价:有人离队会让后面所有人的端口前移 —— 重跑一次下发即可（脚本会检出端口不符并重建）。
-    pub fn rootless_ports(&self, machine: &ViewMachine) -> Vec<(String, u16)> {
+    // 成员按名排序（merge 已保证），获授权的依次占位。
+    // 代价:有人离队会让后面所有人的端口前移 —— 重跑一次下发即可
+    //（容器上打了 devsys.stamp 标签，端口不符会自动重建）。
+    pub fn container_ports(&self, machine: &ViewMachine) -> Vec<(String, u16)> {
         let base = machine.sharing.port_base.unwrap_or(DEFAULT_PORT_BASE);
         let mut out = Vec::new();
         for m in &self.members {
-            if matches!(self.effective_tier(machine, m), Some(t) if t >= 1) {
+            if self.effective_tier(machine, m).is_some() {
                 out.push((m.name.clone(), base.saturating_add(out.len() as u16)));
             }
         }
         out
     }
 
-    pub fn rootless_port(&self, machine: &ViewMachine, member: &str) -> Option<u16> {
-        self.rootless_ports(machine)
+    pub fn container_port(&self, machine: &ViewMachine, member: &str) -> Option<u16> {
+        self.container_ports(machine)
             .into_iter()
             .find(|(n, _)| n == member)
             .map(|(_, p)| p)

@@ -142,7 +142,7 @@ export interface DataSource {
 
   // ── 授权下发：让队友真能登进去（先 preview 看脚本，再 apply 执行）。档位按角色自动算 ──
   provisionPreview(teamPath: string, server: string): Promise<ProvisionPlan>;
-  probeHostCaps(server: string): Promise<HostCaps>;
+  probeHost(server: string): Promise<HostProbe>;
   provisionApply(teamPath: string, server: string): Promise<ProvisionResult>;
 
   // ── team.yaml 的 git 同步（配置即代码：团队配置放 git）──
@@ -298,30 +298,31 @@ export interface ShareDataset {
   as?: string;    // 容器内路径（空 = 同 host）
   mode?: string;  // ro（默认）| rw
 }
-// account   裸机账号（要被共享机的 root）
-// container 一人一容器（要 root：宿主账号当门房 + docker）
-// rootless  一人一容器 · 免 root（全程在贡献者自己的普通账号里，每人一个高位端口）
-export type Isolation = "account" | "container" | "rootless";
+// container 一人一容器（**主线，三平台**：Linux / macOS / Windows 都只要 docker/podman）
+// account   裸机账号（**Linux only 备选**：要 useradd/sudoers，给不了限额与隔离）
+export type Isolation = "account" | "container";
 export interface Sharing {
   isolation: Isolation;
   image?: string;             // 空 = 用 app 现建的基础镜像（带 tmux；免 root 的还带 sshd）
   limit?: ShareLimit | null;  // 主人的借出上限 → 父 cgroup 池（免 root 下只到逐容器）
   data?: ShareDataset[];      // 点名只读挂进来的数据集
-  port_base?: number | null;  // 免 root：每人一个高位端口，从这里往上排（默认 2200）
+  port_base?: number | null;  // 每人一个高位端口，从这里往上排（默认 2200）
 }
-export const DEFAULT_SHARING: Sharing = { isolation: "account", image: "", limit: null, data: [] };
+export const DEFAULT_SHARING: Sharing = { isolation: "container", image: "", limit: null, data: [] };
 
-// 被共享机的实际能力 —— 决定三种兑现方式里哪些真能用。共享**之前**就探，
+// 被共享机的实际现状。**全靠容器引擎自己回答**（`docker version` / `docker info`），
+// 不依赖宿主 shell —— 所以 Windows 上也能探。共享**之前**就探，
 // 别等到下发那一步才告诉主人「这台机没装 docker」。
-export interface HostCaps {
-  os: string;
-  distro: string;
-  docker: boolean;
-  docker_running: boolean;
-  podman: boolean;
-  rootful: boolean; // 是 root 或有免密 sudo
-  systemd: boolean;
+export interface HostProbe {
+  os: string;       // linux | darwin | windows | unknown（宿主系统）
+  engine: string;   // docker | podman（空 = 没找到容器引擎）
+  rootless: boolean;
+  desktop: boolean; // 容器跑在 Docker Desktop / podman machine 的 VM 里
+  ncpu: number;     // 引擎看得到的核数（Desktop 上 = VM 配额 = 外层父池）
+  mem_mib: number;
   gpu: boolean;
+  host_root: boolean; // 宿主有 root / 免密 sudo（建真父池用）
+  systemd: boolean;
   install_hint: string;
 }
 
@@ -336,14 +337,25 @@ export interface ProvisionAccount {
   limits?: string;                            // 限额人话
   port?: number;                              // 免 root：他专属的高位端口
 }
+// 一条要在被共享机上执行的命令。容器档全是 **OS 中立**的裸 token
+// （宿主 shell 不参与解释），要写文件的那条内容走 SSH stdin。
+export interface ProvisionCmd {
+  label: string;
+  argv: string[];
+  stdin?: string;
+  optional: boolean;
+  host_shell: boolean;
+}
 export interface ProvisionPlan {
   server: string;
   accounts: ProvisionAccount[]; // 每个可登入成员一条（含各自档位/是否 sudo）
   any_sudo: boolean;
-  script: string;
+  script: string;          // 裸机账号档（Linux only）才有
+  commands: ProvisionCmd[]; // 容器档才有
   warnings: string[];
   isolation: Isolation;
-  pool: string;        // 借出资源池（父 cgroup）人话；空 = 没设上限
+  pool: string;        // 借出上限的人话；空 = 没设上限
+  pool_kind: string;   // cgroup（真父池，硬顶）| divided（按人数分摊）| 空
   datasets: string[];  // 只读挂进容器的共享数据集
 }
 

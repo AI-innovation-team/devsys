@@ -138,7 +138,7 @@ fn full_sharing_loop() {
     assert_eq!(names, vec!["alice", "bob"]);
 
     // 7) 授权脚本：alice(core)→sudo, bob(member)→无 sudo —— ★ 同机不同权
-    let plan = provision::plan(&view, "gpu-01").unwrap();
+    let plan = provision::plan(&view, "gpu-01", None).unwrap();
     let acct = |n: &str| plan.accounts.iter().find(|a| a.name == n);
     assert!(acct("alice").unwrap().sudo, "core 拿 sudo");
     assert!(!acct("bob").unwrap().sudo, "member 无 sudo");
@@ -185,7 +185,7 @@ fn shared_machine_with_jump_needs_its_jump() {
         }
     }
     // 跳板全 grant=0 → 只建「仅转发」账号（ProxyJump 得能认证，但拿不到 shell），ACL 不开 --ssh
-    let p = provision::plan(&view, "alice-mac").unwrap();
+    let p = provision::plan(&view, "alice-mac", None).unwrap();
     assert!(p.accounts.iter().all(|a| a.mode == "forward" && a.tier == 0 && !a.sudo));
     assert!(p.script.contains("restrict,port-forwarding"));
     assert!(!p.script.contains("-s /bin/bash"), "档0 不给任何人 shell");
@@ -239,7 +239,7 @@ fn github_roster_folds_into_view() {
     });
     let mut v2 = team::merge(&root, &[alice]);
     team::fold_github(&mut v2, &cache);
-    let plan = provision::plan(&v2, "gpu").unwrap();
+    let plan = provision::plan(&v2, "gpu", None).unwrap();
     // alice(core)→sudo, bob(member)→无sudo, carol 无公钥→跳过
     assert!(plan.accounts.iter().find(|a| a.name == "alice").unwrap().sudo);
     assert!(!plan.accounts.iter().find(|a| a.name == "bob").unwrap().sudo);
