@@ -254,21 +254,26 @@ function LaunchCard({
   const [editing, setEditing] = useState(false);
 
   // 三档兑现方式。能不能用取决于那台机的实际能力（探测结果),不可用的直接灰掉并说清缺什么。
+  //
+  // 平台边界:卡住 Linux 的**不是 docker，是宿主账号那套**（useradd / sudoers / systemd
+  // slice）—— 前两档要它，所以只能 Linux。免 root 那档不碰宿主账号，**macOS 一样能跑**。
   const ISOS: { v: Isolation; label: string; why: (c: HostCaps | null) => string }[] = [
     {
       v: "account", label: "裸机账号",
-      why: (c) => (!c ? "" : c.os !== "linux" ? "下发脚本只支持 Linux" : !c.rootful ? "需要这台机的 root / 免密 sudo" : ""),
+      why: (c) => (!c ? "" : c.os !== "linux" ? "这一档要 useradd/sudoers，只支持 Linux" : !c.rootful ? "需要这台机的 root / 免密 sudo" : ""),
     },
     {
       v: "container", label: "一人一容器",
-      why: (c) => (!c ? "" : c.os !== "linux" ? "下发脚本只支持 Linux"
+      why: (c) => (!c ? "" : c.os !== "linux" ? "门房要建宿主账号，只支持 Linux"
         : !c.rootful ? "需要这台机的 root / 免密 sudo"
         : !c.docker ? "这台机没装 docker" : !c.docker_running ? "docker 守护进程没在跑" : ""),
     },
     {
       v: "rootless", label: "一人一容器 · 免 root",
-      why: (c) => (!c ? "" : c.os !== "linux" ? "下发脚本只支持 Linux"
-        : !c.podman && !c.docker ? "这台机没装 podman 也没装 docker" : ""),
+      // 只要有容器引擎就行 —— 不碰宿主账号，所以 Linux / macOS 都可以。
+      why: (c) => (!c ? "" : c.os !== "linux" && c.os !== "darwin" ? `暂不支持 ${c.os}（Windows 建议共享 WSL2 里的 Linux）`
+        : !c.podman && !c.docker ? "这台机没装 podman 也没装 docker"
+        : c.os === "darwin" && !c.docker_running && !c.podman ? "Docker Desktop 没在跑" : ""),
     },
   ];
   const isoBlocked = (v: Isolation) => ISOS.find((i) => i.v === v)!.why(caps);
@@ -508,7 +513,8 @@ function LaunchCard({
                 {iso === "rootless" && (
                   <>同样一人一容器，但<strong>全程在你自己的普通账号里</strong> —— 不建宿主账号、不碰
                   <code> /etc</code>、不需要 sudo。队友直连他自己容器里的 sshd（<strong>各占一个高位端口</strong>，
-                  app 会自动填给他们）。你只是这台机的普通用户也能贡献它。
+                  app 会自动填给他们）。你只是这台机的普通用户也能贡献它，
+                  <strong>也是三档里唯一能在 macOS 上跑的</strong>。
                   代价：做不到档 0「借道」，也没有父资源池（限额只到逐容器）。</>
                 )}
               </div>

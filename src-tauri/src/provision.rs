@@ -323,6 +323,7 @@ chown -R '{name}':'{name}' "/home/{name}/.ssh"
 # 由 app 生成，需以 root 执行。幂等：可重复运行。
 # 身份到人 + RBAC：每位成员一个独立账号，权限按其角色定（core=sudo / member=受限）。
 set -e
+[ "$(uname -s)" = Linux ] || {{ echo "这一档只支持 Linux（要 useradd / sudoers）。macOS 上请把隔离方式改成「一人一容器 · 免 root」—— 那档不碰宿主账号。" >&2; exit 1; }}
 if [ "$(id -u)" -ne 0 ]; then echo "需要 root（请用 sudo 运行）" >&2; exit 1; fi
 NOLOGIN=/usr/sbin/nologin
 [ -x "$NOLOGIN" ] || NOLOGIN=/sbin/nologin
@@ -547,6 +548,7 @@ docker exec -u 0 '{cname}' sh -c "id -u '{name}' >/dev/null 2>&1 || useradd -m -
 # 「档」= 开多少权（team.yaml 的 grants，一字未改），「容器」= 怎么关。
 # 每人一个容器：档位逐人兑现、配额逐人生效、爆炸半径只有他自己。
 set -e
+[ "$(uname -s)" = Linux ] || {{ echo "这一档只支持 Linux（门房要建宿主账号 + 改登录 shell）。macOS 上请改成「一人一容器 · 免 root」—— 那档不碰宿主账号。" >&2; exit 1; }}
 if [ "$(id -u)" -ne 0 ]; then echo "需要 root（请用 sudo 运行）" >&2; exit 1; fi
 command -v docker >/dev/null 2>&1 || {{ echo "这台机没装 docker —— 装好再下发，或把隔离方式改回「裸机账号」" >&2; exit 1; }}
 docker info >/dev/null 2>&1 || {{ echo "docker 守护进程没在跑（systemctl start docker）" >&2; exit 1; }}
@@ -815,7 +817,9 @@ $ENG exec -u 0 "$C" sh -c "install -d -m 700 -o '{name}' -g '{name}' '/home/{nam
             .into(),
     );
     warnings.push(
-        "容器归你的用户会话所有:脚本会试着开 linger（`loginctl enable-linger`），否则你一登出容器就被杀。开不了的话让管理员执行一次。"
+        "**这一档是三档里唯一能在 macOS 上跑的**（它不碰宿主账号，只要有 docker/podman）。\
+         Linux 上脚本会开 linger（否则你一登出容器就被杀）；macOS 上容器由 Docker Desktop / podman machine 托管，\
+         不受 SSH 登出影响，但**随桌面登录启动** —— 这台 Mac 没人登录时容器是停的。Windows 暂不支持（它的 SSH 默认 shell 不是 sh）。"
             .into(),
     );
     if !accounts.is_empty() {
@@ -837,7 +841,7 @@ $ENG exec -u 0 "$C" sh -c "install -d -m 700 -o '{name}' -g '{name}' '/home/{nam
         warnings.push("有成员是**档 2**：特权容器 + 挂载宿主 `/host`。rootless 下这仍被 userns 兜住（等于你这个账号的权限，不是宿主 root），但你自己的文件对他全开。".into());
     }
     if !f.gpus.is_empty() {
-        warnings.push("GPU 在 rootless 下要 podman + CDI（`nvidia-ctk cdi generate`）或配好 rootless 的 nvidia-container-toolkit；脚本会自动按引擎选写法，起不来会退回无 GPU 并提示。".into());
+        warnings.push("GPU 在 rootless 下要 podman + CDI（`nvidia-ctk cdi generate`）或配好 rootless 的 nvidia-container-toolkit；脚本会自动按引擎选写法。**macOS 上没有 GPU 直通**（容器跑在虚拟机里），脚本会忽略 GPU 设置并说明。".into());
     }
 
     let script = format!(
@@ -855,12 +859,25 @@ ENG=podman
 command -v podman >/dev/null 2>&1 || ENG=docker
 command -v "$ENG" >/dev/null 2>&1 || {{ echo "没找到 podman 也没找到 docker —— 装一个（推荐 podman，天生 rootless）" >&2; exit 1; }}
 $ENG info >/dev/null 2>&1 || {{ echo "$ENG 跑不起来（rootless 没初始化?试 '$ENG system migrate' 或让管理员配 subuid/subgid）" >&2; exit 1; }}
-echo "下发到 {server}（引擎 $ENG，免 root）："
-# 登出后容器要继续活着 —— 没有 linger，你一断开 SSH 容器就被 systemd 收走。
-loginctl enable-linger "$(id -un)" >/dev/null 2>&1 \
-  && echo "  已开 linger（登出后容器继续跑）" \
-  || echo "  ⚠ 开 linger 失败 —— 你登出后容器可能被杀，让管理员跑 loginctl enable-linger $(id -un)"
-# GPU：podman 走 CDI，docker 走 --gpus
+OS=$(uname -s)
+echo "下发到 {server}（$OS，引擎 $ENG，免 root）："
+# 容器怎么活过你这次登录 —— Linux 和 macOS 机制完全不同。
+case "$OS" in
+  Linux)
+    # 没有 linger，你一断开 SSH，systemd 就把你的用户会话连同容器一起收走。
+    loginctl enable-linger "$(id -un)" >/dev/null 2>&1 \
+      && echo "  已开 linger（登出后容器继续跑）" \
+      || echo "  ⚠ 开 linger 失败 —— 你登出后容器可能被杀，让管理员跑 loginctl enable-linger $(id -un)"
+    ;;
+  Darwin)
+    # macOS 没有 systemd，容器由 Docker Desktop / podman machine 那个 VM 托管，
+    # 不跟着 SSH 会话走 —— 不需要 linger。但它跟着**桌面登录**走。
+    echo "  macOS：容器由 Docker Desktop / podman machine 托管，不受 SSH 登出影响"
+    echo "  ⚠ 但它随**桌面登录**启动 —— 这台 Mac 没人登录时容器是停的（设成开机自启可缓解）"
+    ;;
+  *) echo "  ⚠ 没见过的系统 $OS —— 容器能不能活过登出，取决于你的容器引擎" ;;
+esac
+# GPU：podman 走 CDI，docker 走 --gpus；非 Linux 没有 NVIDIA 直通
 GPUARG=""
 {gpu_block}{image_block}{blocks}
 echo "完成。队友各自连 {server}:<他的端口>，落在自己的容器里。"
@@ -870,7 +887,9 @@ echo "完成。队友各自连 {server}:<他的端口>，落在自己的容器�
             String::new()
         } else {
             format!(
-                r#"if [ "$ENG" = podman ]; then
+                r#"if [ "$OS" != Linux ]; then
+  echo "  ⚠ $OS 上没有 GPU 直通（容器跑在虚拟机里）—— 已忽略你写的 GPU 设置"
+elif [ "$ENG" = podman ]; then
   GPUARG="--device nvidia.com/gpu={gpus}"
 else
   GPUARG="--gpus {gpus}"
@@ -986,7 +1005,8 @@ mod tests {
         let v = view(&[("core", 2)], &[("dan", KEY_A, "pub")]);
         let p = plan(&v, "gpu").unwrap();
         assert!(p.accounts.is_empty());
-        assert!(!p.script.contains("useradd"));
+        // 注意别撞上平台守卫那句提示文案里的 "useradd" —— 这里要的是「没有真的建账号」
+        assert!(!p.script.contains("useradd -m"));
     }
 
     #[test]
@@ -1283,6 +1303,29 @@ mod tests {
         assert!(p.script.contains("/usr/sbin/sshd -D -e"));
         // 登出后容器要活着
         assert!(p.script.contains("loginctl enable-linger"));
+    }
+
+    // ★ 平台边界:卡住 Linux 的**不是 docker**（macOS/Windows 都有 docker），
+    // 是宿主账号那套（useradd / sudoers / systemd slice）。免 root 不碰它 → macOS 能跑。
+    #[test]
+    fn only_rootless_works_beyond_linux() {
+        let members = [("alice", KEY_A, "core")];
+        let grants = [("core", 2)];
+
+        // 前两档:开头就说清只支持 Linux，而不是跑到一半 useradd: command not found
+        for sh in [Sharing::default(), container_sharing()] {
+            let p = plan(&view_sh(&grants, &members, sh), "gpu").unwrap();
+            assert!(p.script.contains(r#"[ "$(uname -s)" = Linux ]"#), "要在开头挡住非 Linux");
+            assert!(p.script.contains("免 root"), "要指路到能用的那一档");
+        }
+
+        // 免 root:不挡平台，而是按平台分支（macOS 不需要 linger，也没有 GPU 直通）
+        let p = plan(&view_sh(&grants, &members, rootless_sharing()), "gpu").unwrap();
+        assert!(!p.script.contains(r#"[ "$(uname -s)" = Linux ] ||"#), "免 root 不该挡掉 macOS");
+        assert!(p.script.contains("Darwin)"));
+        assert!(p.script.contains("loginctl enable-linger"), "Linux 分支仍要开 linger");
+        assert!(p.script.contains(r#"if [ "$OS" != Linux ]"#), "非 Linux 要忽略 GPU 设置");
+        assert!(p.warnings.iter().any(|w| w.contains("macOS")));
     }
 
     // ── 注入防御：主人写的镜像/限额/路径也进 root 脚本 ──────

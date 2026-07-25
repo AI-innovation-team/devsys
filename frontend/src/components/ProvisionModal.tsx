@@ -74,7 +74,7 @@ export function ProvisionModal({
                 )}
               </p>
 
-              {plan.isolation === "container" && (
+              {plan.isolation !== "account" && (
                 <div className="prov-accts">
                   <div className="prov-sec-t">
                     {plan.isolation === "rootless" ? "逐容器限额" : "借出资源池（父 cgroup）"}
@@ -101,7 +101,7 @@ export function ProvisionModal({
               {plan.accounts.length > 0 ? (
                 <div className="prov-accts">
                   <div className="prov-sec-t">
-                    {plan.isolation === "container" ? "将建立 / 更新的容器与账号" : "将建立 / 更新的账号"}
+                    {plan.isolation !== "account" ? "将建立 / 更新的容器与账号" : "将建立 / 更新的账号"}
                   </div>
                   <div className="prov-chips">
                     {plan.accounts.map((a) => (

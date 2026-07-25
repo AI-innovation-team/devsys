@@ -1139,8 +1139,14 @@ async fn probe_host_caps(
         }
     }
     // 给命令而不是替他装 —— 不静默改别人的机器。
-    c.install_hint = if c.os != "linux" {
-        "下发脚本只支持 Linux（useradd / systemd / rootless 容器都是 Linux 的）。".into()
+    //
+    // 平台边界要说准:卡住 Linux 的**不是 docker，是宿主账号那套**（useradd / sudoers /
+    // systemd slice）。免 root 那档不碰宿主账号，所以在 macOS 上照样能跑 —— 只要有
+    // docker/podman。Windows 是另一回事:它的 SSH 默认 shell 不是 sh，脚本根本喂不进去。
+    c.install_hint = if c.os == "darwin" && !c.docker && !c.podman {
+        "这台 Mac 只能用「一人一容器 · 免 root」那一档（另两档要 useradd/systemd）。\n装容器引擎：brew install --cask docker（或 brew install podman && podman machine init）".into()
+    } else if c.os != "linux" && c.os != "darwin" {
+        format!("下发脚本目前只支持 Linux 与 macOS（探测到 {}）。Windows 上建议共享 WSL2 里的那套 Linux，而不是 Windows 本身。", c.os)
     } else if !c.docker && !c.podman {
         match c.distro.as_str() {
             "ubuntu" | "debian" | "linuxmint" => {
@@ -1152,7 +1158,13 @@ async fn probe_host_caps(
             _ => "装 docker：curl -fsSL https://get.docker.com | sudo sh（或用你发行版的包管理器装 podman）".into(),
         }
     } else if c.docker && !c.docker_running {
-        "docker 装了但守护进程没跑：sudo systemctl enable --now docker".into()
+        if c.os == "darwin" {
+            "docker 装了但没在跑：打开 Docker Desktop（建议设成登录时自启）".into()
+        } else {
+            "docker 装了但守护进程没跑：sudo systemctl enable --now docker".into()
+        }
+    } else if c.os == "darwin" {
+        "macOS 只支持「一人一容器 · 免 root」那一档 —— 另两档要 useradd/systemd。".into()
     } else {
         String::new()
     };
