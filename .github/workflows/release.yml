@@ -127,7 +127,9 @@ jobs:
           DEVSYS_GH_CLIENT_ID: ${{ vars.DEVSYS_GH_CLIENT_ID }}
         with:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}-dev', github.run_number) }}
-          releaseName: DevSys ${{ github.ref_type == 'tag' && github.ref_name || format('dev build #{0}', github.run_number) }}
+          # 别在这里写 `#`：YAML 会把空格后的 # 当注释，把 ${{ }} 表达式截断
+          # ——整个 workflow 会在校验阶段就被 GitHub 否掉（连 job 都不建）。
+          releaseName: DevSys ${{ github.ref_type == 'tag' && github.ref_name || format('dev build {0}', github.run_number) }}
           releaseBody: |
             两个包：**macOS 通用**（Apple Silicon + Intel）与 **Linux x86_64**（.deb / .AppImage）。
 
