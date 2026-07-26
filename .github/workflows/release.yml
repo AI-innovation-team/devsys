@@ -1,0 +1,146 @@
+name: release
+
+# 打 tag（v0.1.0 这种）就出两个包：macOS 通用二进制 + Linux x86_64。
+# 也可以手动跑（workflow_dispatch），出 draft release 方便试。
+#
+# 关键约束：Rust 侧要能找到 tsnet-helper（tauri.conf.json 的 resources 指着
+# ../tsnet-helper/tsnet-helper），所以每个平台都得先把 Go 那个 helper 编出来放到那个位置。
+# macOS 编两个架构再 lipo 成通用的，否则通用包在另一半架构上起不了 tailnet。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # 先跑测试再打包 —— 别发一个自己都没验过的包。
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 装 Linux 构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+      - run: cargo test --lib
+        working-directory: src-tauri
+      - run: npm ci
+        working-directory: frontend
+      # upload.ts 有既存的 Node26/TS5.5 lib 报错，与业务无关 —— 只挡业务代码的类型错。
+      - name: 类型检查（排除既存的 upload.ts）
+        working-directory: frontend
+        run: |
+          npx tsc --noEmit 2>&1 | tee /tmp/tsc.log || true
+          if grep -v '^src/upload\.ts' /tmp/tsc.log | grep -q '^src/.*error'; then
+            echo "::error::类型检查有业务代码的错误"; grep -v '^src/upload\.ts' /tmp/tsc.log; exit 1
+          fi
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            label: macOS（Apple Silicon + Intel 通用）
+            args: --target universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          # 用 22.04 而不是 latest：glibc 更老 → 装出来的 .deb/.AppImage 兼容面更宽。
+          - os: ubuntu-22.04
+            label: Linux x86_64
+            args: ""
+            rust-targets: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tsnet-helper/go.mod
+          cache-dependency-path: tsnet-helper/go.sum
+
+      # tsnet 是纯 Go，关掉 CGO 才好交叉编译。
+      - name: 构建 tsnet-helper（macOS 通用二进制）
+        if: runner.os == 'macOS'
+        working-directory: tsnet-helper
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          GOOS=darwin GOARCH=arm64 go build -trimpath -o helper-arm64 .
+          GOOS=darwin GOARCH=amd64 go build -trimpath -o helper-amd64 .
+          lipo -create -output tsnet-helper helper-arm64 helper-amd64
+          chmod +x tsnet-helper
+          lipo -info tsnet-helper
+
+      - name: 构建 tsnet-helper（Linux）
+        if: runner.os == 'Linux'
+        working-directory: tsnet-helper
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          GOOS=linux GOARCH=amd64 go build -trimpath -o tsnet-helper .
+          chmod +x tsnet-helper
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.os }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 装 Linux 构建依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            patchelf file desktop-file-utils
+
+      - name: 装前端依赖
+        run: |
+          npm ci
+          npm ci --prefix frontend
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # OAuth App 的 client_id 是 device flow 的**公开**值（不是机密）。
+          # 二进制里已烤了默认值；这里允许换成别的 App。
+          DEVSYS_GH_CLIENT_ID: ${{ vars.DEVSYS_GH_CLIENT_ID }}
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}-dev', github.run_number) }}
+          releaseName: DevSys ${{ github.ref_type == 'tag' && github.ref_name || format('dev build #{0}', github.run_number) }}
+          releaseBody: |
+            两个包：**macOS 通用**（Apple Silicon + Intel）与 **Linux x86_64**（.deb / .AppImage）。
+
+            ### macOS 首次打开
+            包**没有 Apple 签名**（我们还没有 Developer ID），Gatekeeper 会拦。装完执行一次：
+            ```
+            xattr -dr com.apple.quarantine /Applications/DevSys.app
+            ```
+            然后正常打开即可。首次启动会问一次系统密码 —— 那是钥匙串在确认「这个 app 可以读它自己的密钥」，
+            点**始终允许**就不会再问（升级到新版本会再问一次，因为签名标识变了）。
+
+            ### Linux
+            `.deb` 直接 `sudo dpkg -i`；`.AppImage` `chmod +x` 后直接跑。
+          releaseDraft: true
+          prerelease: ${{ github.ref_type != 'tag' }}
+          args: ${{ matrix.args }}

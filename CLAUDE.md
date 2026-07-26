@@ -51,6 +51,8 @@ assets/logo/     节点网 logo(light/dark)
 - 桌面 app:仓库根 `npm run tauri dev`(前端固定端口 **1420**;首次编 russh/stronghold 较慢)。
 - 前端单独:`cd frontend && npm run build`(vite/esbuild,不做类型检查)。类型检查 `npx tsc --noEmit`(注:`src/upload.ts` 有既存的 Node26/TS5.5 `Uint8Array` lib 报错,与业务无关)。
 - 门户部署:`./deploy.sh`(render → 构建前端 → 推 relay → 推 gateway)。默认 SSH 目标 `turing`,大流量断连时用 tailnet `100.125.82.91`。
+- **发行:打 tag `v*` 触发 `.github/workflows/release.yml`** —— 出两个包:**macOS 通用**(arm64+x86_64,`lipo`)与 **Linux x86_64**(.deb/.AppImage,用 ubuntu-22.04 编以放宽 glibc 兼容面)。先跑 `cargo test --lib` + 类型检查再打包。**每个平台都要先把 Go 的 `tsnet-helper` 编到 `tsnet-helper/tsnet-helper`**(`tauri.conf.json` 的 resources 指着它),macOS 要 `lipo` 成通用的,否则通用包在另一半架构上起不了 tailnet。`CGO_ENABLED=0`(tsnet 纯 Go,关掉才好交叉编译)。
+- **没有 Apple 签名**(还没 Developer ID):macOS 用户装完要 `xattr -dr com.apple.quarantine /Applications/DevSys.app`。
 
 ## 关键坑(务必守住)
 
@@ -64,6 +66,7 @@ assets/logo/     节点网 logo(light/dark)
 - **门户不可重生成 oauth2-proxy.cfg**:门户端拿不到 .env,重生成会丢 client_secret/cookie_secret → 认证瘫痪。只原地改单行。
 - **运行时真源在门户可写目录**(`~/gateway/data`、`~/gateway/oauth2`),绝不放 /etc。
 - WKWebView 不支持元素级 requestFullscreen → 用 Tauri 窗口 API。
+- **dev 构建每次启动都被要系统密码,不是 bug**:macOS 钥匙串 ACL 绑的是**代码签名标识**,而 `tauri dev` 是 ad-hoc 签名(`codesign -dvvv` 见 `Signature=adhoc, linker-signed`),标识 = 二进制自己的 cdhash → **每次重编都变** → 钥匙串当成"另一个 app" → 弹密码,点多少次「始终允许」都没用。所以 `keychain.rs::skip_keychain()` 在 **debug 构建里绕开钥匙串**、只用 0600 回退文件(首次会从钥匙串取一次并落盘,老用户不必迁移保险库)。想验真钥匙串路径:`DEVSYS_KEYCHAIN=1 npm run tauri dev`。发行版二进制不变 → 点一次「始终允许」即可(升级新版本会再问一次,有 Developer ID 则一次都不问)。
 
 ## 路线图(呼应北极星)
 

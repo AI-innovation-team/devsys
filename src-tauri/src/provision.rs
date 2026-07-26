@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::team::{ShareLimit, Sharing, TeamView};
+use crate::team::{ShareLimit, TeamView};
 
 // 合法 unix 用户名:字母/下划线开头,后跟字母数字/下划线/连字符,≤32。
 fn valid_user(s: &str) -> bool {
@@ -1006,7 +1006,7 @@ fn limits_of(cpus: Option<f64>, mem: Option<&str>) -> String {
 }#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::team::{merge, new_member_file, upsert_machine, Machine, ShareData, TeamRoot};
+    use crate::team::{merge, new_member_file, upsert_machine, Machine, ShareData, Sharing, TeamRoot};
 
     const KEY_A: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample alice@mac";
 

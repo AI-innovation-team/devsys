@@ -1303,6 +1303,17 @@ fn helper_path(app: &AppHandle) -> Result<String, String> {
     if let Ok(res) = app.path().resource_dir() {
         let p = res.join(name);
         if p.exists() {
+            // .deb / .AppImage 里资源的执行位不一定保得住 —— 补一下，
+            // 否则 tailnet 起不来而且报的是「Permission denied」这种看不懂的错。
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(md) = std::fs::metadata(&p) {
+                    if md.permissions().mode() & 0o111 == 0 {
+                        let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+                    }
+                }
+            }
             return Ok(p.to_string_lossy().to_string());
         }
     }
