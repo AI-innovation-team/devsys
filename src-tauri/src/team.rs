@@ -61,15 +61,27 @@ pub struct Member {
     // 我在团队里的角色（引用 team.yaml 的 roles 键）。缺省 member。
     #[serde(default = "default_role")]
     pub role: String,
-    // ★ 切面模型：我共享的「自己这台设备」= 人节点的算力切面（人本身就是一台算力）。
-    // 与 machines（我贡献但「不是我」的服务器）区分。有 = 这个人在图里带算力环。
+    // ★ 切面模型：我共享的「自己的设备」= 人节点的算力切面（人本身就是一台算力）。
+    // 与 machines（我贡献但「不是我」的服务器）区分:设备**跟着人走**（笔记本合盖就没了），
+    // 服务器是**基建**。一个人可以有多台设备（mac / 台式 / 工位机）—— 网络层早就装得下了
+    // （同一 GitHub 身份从三台机登录 = 三个 tailnet 节点），是这里以前落后于网络层。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<Device>,
+    // 老格式:单数 device（没有 name）。只读不写 —— parse 后由 normalize() 折进 devices。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<Device>,
 }
 
-// 自身设备:人的算力切面。没有 name(名字就是这个人),其余同机器的「怎么到达 + 开档」。
+// 自身设备:人的算力切面。其余同机器的「怎么到达 + 开档」。
+//
+// name 是**设备名**（mac / desktop / lab-box），不是节点名 —— 节点名是
+// `<成员>-<设备名>`（见 device_node_name）。这样 alice 的 mac 和 bob 的 mac 不会撞车，
+// 而节点名又落在同一个扁平命名空间里（= ssh_open 的连接键 = store 里的服务器名）。
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct Device {
+    // 老格式没有这个字段 → 反序列化成空，normalize() 会补成 "device"。
+    #[serde(default)]
+    pub name: String,
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
@@ -85,6 +97,22 @@ pub struct Device {
     pub advertises: Vec<String>,
     #[serde(default, skip_serializing_if = "Sharing::is_default")]
     pub sharing: Sharing,
+}
+
+// 设备的**节点名**:`<成员>-<设备名>`。设备名为空时退化成裸成员名 ——
+// 这保住了老数据（单数 device、名字即人名）迁移后节点名不变，store 里的凭据/共享标记不会失联。
+pub fn device_node_name(member: &str, device: &str) -> String {
+    let d = device.trim();
+    if d.is_empty() { member.to_string() } else { format!("{member}-{d}") }
+}
+
+// 把老格式（单数 device、无 name）折进 devices。parse_member 后调一次即可。
+pub fn normalize(mf: &mut MemberFile) {
+    if let Some(d) = mf.member.device.take() {
+        if !mf.member.devices.iter().any(|x| x.name == d.name) {
+            mf.member.devices.push(d);
+        }
+    }
 }
 
 fn default_role() -> String {
@@ -329,10 +357,11 @@ pub fn parse_root(text: &str) -> Result<TeamRoot, String> {
 }
 
 pub fn parse_member(text: &str) -> Result<MemberFile, String> {
-    let mf: MemberFile = serde_yaml::from_str(text).map_err(|e| format!("member 文件解析失败: {e}"))?;
+    let mut mf: MemberFile = serde_yaml::from_str(text).map_err(|e| format!("member 文件解析失败: {e}"))?;
     if mf.member.name.trim().is_empty() {
         return Err("member 文件缺少 member.name".into());
     }
+    normalize(&mut mf); // 老格式的单数 device 折进 devices
     Ok(mf)
 }
 
@@ -357,10 +386,10 @@ pub fn merge(root: &TeamRoot, members: &[MemberFile]) -> TeamView {
             pubkey: mf.member.pubkey.clone(),
             role: mf.member.role.clone(),
         });
-        // 自身设备（算力切面）→ 一台 is_self 机器,名字即人名。
-        if let Some(d) = &mf.member.device {
+        // 自身设备（算力切面）→ 每台一个 is_self 节点。
+        for d in &mf.member.devices {
             view_machines.push(ViewMachine {
-                name: mf.member.name.clone(),
+                name: device_node_name(&mf.member.name, &d.name),
                 host: d.host.clone(),
                 port: d.port,
                 jump: d.jump.clone(),
@@ -507,6 +536,7 @@ pub fn migrate_flat(text: &str) -> Option<(TeamRoot, Vec<MemberFile>)> {
                 pubkey: mem.pubkey.clone(),
                 role: default_role(),
                 device: None,
+                devices: vec![],
             },
             machines: vec![],
         });
@@ -515,7 +545,7 @@ pub fn migrate_flat(text: &str) -> Option<(TeamRoot, Vec<MemberFile>)> {
         f.machines = machines;
     } else {
         files.push(MemberFile {
-            member: Member { name: owner, identity: String::new(), pubkey: String::new(), role: default_role(), device: None },
+            member: Member { name: owner, identity: String::new(), pubkey: String::new(), role: default_role(), device: None, devices: vec![] },
             machines,
         });
     }
@@ -542,6 +572,7 @@ pub fn new_member_file(name: &str, pubkey: &str, role: &str) -> MemberFile {
             pubkey: pubkey.trim().into(),
             role: if role.is_empty() { default_role() } else { role.into() },
             device: None,
+            devices: vec![],
         },
         machines: vec![],
     }
@@ -552,6 +583,20 @@ pub fn upsert_machine(mf: &mut MemberFile, m: Machine) {
         Some(e) => *e = m,
         None => mf.machines.push(m),
     }
+}
+
+// 登记/更新一台**自己的设备**。设备名唯一（同一个人不能有两台叫 mac 的）。
+pub fn upsert_device(mf: &mut MemberFile, d: Device) {
+    match mf.member.devices.iter_mut().find(|x| x.name == d.name) {
+        Some(e) => *e = d,
+        None => mf.member.devices.push(d),
+    }
+}
+
+pub fn remove_device(mf: &mut MemberFile, name: &str) -> bool {
+    let before = mf.member.devices.len();
+    mf.member.devices.retain(|x| x.name != name);
+    mf.member.devices.len() != before
 }
 
 pub fn remove_machine(mf: &mut MemberFile, name: &str) -> bool {
@@ -669,7 +714,8 @@ machines:
     fn device_folds_into_self_machine() {
         // alice 共享自己的设备(切面),另贡献一台服务器 gpu。
         let mut af = new_member_file("alice", "KA", "core");
-        af.member.device = Some(Device {
+        af.member.devices.push(Device {
+            name: "mac".into(),
             host: "100.64.0.11".into(), port: 22, jump: None,
             username: "alice".into(), transport: "tailnet".into(),
             grants: BTreeMap::from([("core".into(), 2), ("member".into(), 1)]),
@@ -684,21 +730,90 @@ machines:
             sharing: Default::default(),
         });
         let v = merge(&root(), &[af]);
-        // 两台算力节点:自身设备(is_self,名=alice)+ 服务器 gpu。
+        // 两台算力节点:自身设备(is_self,节点名 alice-mac)+ 服务器 gpu。
         assert_eq!(v.machines.len(), 2);
-        let dev = v.machines.iter().find(|m| m.name == "alice").unwrap();
+        let dev = v.machines.iter().find(|m| m.name == "alice-mac").unwrap();
         assert!(dev.is_self, "自身设备标 is_self");
         assert_eq!(dev.owner, "alice");
         assert_eq!(dev.host, "100.64.0.11");
         let gpu = v.machines.iter().find(|m| m.name == "gpu").unwrap();
         assert!(!gpu.is_self, "贡献的服务器不是自身设备");
-        // device 走 YAML 往返不丢。
-        let back = parse_member(&member_to_yaml(&{
-            let mut f = new_member_file("alice", "KA", "core");
-            f.member.device = Some(Device { host: "1.2.3.4".into(), port: 22, jump: None, username: String::new(), transport: "tailnet".into(), grants: BTreeMap::from([("member".into(), 1)]), advertises: vec![], sharing: Default::default() });
+    }
+
+    // ★ 一个人可以有多台设备（mac / 台式 / 工位机）。网络层早就装得下了
+    // （同一 GitHub 身份从三台机登录 = 三个 tailnet 节点），模型不能落后于它。
+    #[test]
+    fn one_person_can_have_many_devices() {
+        let mut af = new_member_file("alice", "KA", "core");
+        for (n, h) in [("mac", "100.64.0.11"), ("desktop", "100.64.0.12"), ("lab", "100.64.0.13")] {
+            upsert_device(&mut af, Device {
+                name: n.into(), host: h.into(), port: 22, jump: None, username: String::new(),
+                transport: "tailnet".into(), grants: BTreeMap::from([("member".into(), 1)]),
+                advertises: vec![], sharing: Default::default(),
+            });
+        }
+        let v = merge(&root(), &[af.clone()]);
+        let names: Vec<&str> = v.machines.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["alice-desktop", "alice-lab", "alice-mac"], "每台设备一个节点，节点名 <成员>-<设备>");
+        assert!(v.machines.iter().all(|m| m.is_self && m.owner == "alice"));
+
+        // 同名设备是更新不是追加
+        upsert_device(&mut af, Device {
+            name: "mac".into(), host: "100.64.0.99".into(), port: 22, jump: None, username: String::new(),
+            transport: "tailnet".into(), grants: BTreeMap::new(), advertises: vec![], sharing: Default::default(),
+        });
+        assert_eq!(af.member.devices.len(), 3);
+        assert_eq!(merge(&root(), &[af.clone()]).machines.iter().find(|m| m.name == "alice-mac").unwrap().host, "100.64.0.99");
+
+        assert!(remove_device(&mut af, "lab"));
+        assert_eq!(merge(&root(), &[af]).machines.len(), 2);
+    }
+
+    // ★ 不同人的同名设备不能撞车 —— 节点名是扁平命名空间（= ssh_open 的连接键）。
+    #[test]
+    fn same_device_name_across_people_does_not_collide() {
+        let mk = |who: &str| {
+            let mut f = new_member_file(who, "K", "member");
+            upsert_device(&mut f, Device {
+                name: "mac".into(), host: "10.0.0.1".into(), port: 22, jump: None, username: String::new(),
+                transport: "tailnet".into(), grants: BTreeMap::new(), advertises: vec![], sharing: Default::default(),
+            });
             f
-        }).unwrap()).unwrap();
-        assert_eq!(back.member.device.unwrap().host, "1.2.3.4");
+        };
+        let v = merge(&root(), &[mk("alice"), mk("bob")]);
+        let names: Vec<&str> = v.machines.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["alice-mac", "bob-mac"]);
+    }
+
+    // ★ 老格式（单数 device、没有 name）读进来要折进 devices，**且节点名不变** ——
+    // 变了的话 store 里的凭据和 shared_to 标记就全失联了。
+    #[test]
+    fn old_singular_device_migrates_without_renaming_the_node() {
+        let yaml = "member:\n  name: alice\n  role: core\n  device:\n    host: 100.64.0.11\n    transport: tailnet\n";
+        let mf = parse_member(yaml).unwrap();
+        assert!(mf.member.device.is_none(), "老字段读完就折平，不再留着");
+        assert_eq!(mf.member.devices.len(), 1);
+        let v = merge(&root(), &[mf.clone()]);
+        assert_eq!(v.machines[0].name, "alice", "节点名保持裸成员名");
+        assert!(v.machines[0].is_self);
+
+        // 存回去是新格式，再读一次仍等价（幂等）
+        let again = parse_member(&member_to_yaml(&mf).unwrap()).unwrap();
+        assert_eq!(again.member.devices.len(), 1);
+        assert_eq!(merge(&root(), &[again]).machines[0].name, "alice");
+    }
+
+    #[test]
+    fn device_round_trips_through_yaml() {
+        let mut f = new_member_file("alice", "KA", "core");
+        upsert_device(&mut f, Device {
+            name: "mac".into(), host: "1.2.3.4".into(), port: 22, jump: None, username: String::new(),
+            transport: "tailnet".into(), grants: BTreeMap::from([("member".into(), 1)]),
+            advertises: vec![], sharing: Default::default(),
+        });
+        let back = parse_member(&member_to_yaml(&f).unwrap()).unwrap();
+        assert_eq!(back.member.devices[0].name, "mac");
+        assert_eq!(back.member.devices[0].host, "1.2.3.4");
     }
 
     #[test]

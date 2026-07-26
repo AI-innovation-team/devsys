@@ -123,7 +123,9 @@ export interface DataSource {
   createTeam(path: string, teamName: string, member: string, pubkey: string, role?: string): Promise<void>;
   addMember(path: string, name: string, pubkey: string, role?: string, identity?: string): Promise<TeamView>;
   // grants = 角色→档位（RBAC）；member = 我是谁（写进我的 members/<我>.yaml）
-  shareServer(teamPath: string, member: string, server: string, grants: Record<string, number>, sharing?: Sharing | null): Promise<Server[]>;
+  // asDevice=true → 写进 member.devices（我自己的设备，跟着人走）；
+  // false → 写进 machines（我贡献的服务器，是基建）。只有本人分得清，所以由他勾。
+  shareServer(teamPath: string, member: string, server: string, grants: Record<string, number>, sharing?: Sharing | null, asDevice?: boolean): Promise<Server[]>;
   unshareServer(teamPath: string, member: string, server: string): Promise<Server[]>;
   myPubkeys(): Promise<string[]>; // 本机 ~/.ssh/*.pub（登记自己时用）
   pickTeamSavePath(): Promise<string | null>; // 新建 team.yaml 的另存为

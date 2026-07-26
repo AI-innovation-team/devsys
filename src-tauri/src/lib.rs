@@ -848,6 +848,10 @@ fn share_server(
     server: String,
     grants: std::collections::BTreeMap<String, u8>,
     sharing: Option<team::Sharing>,
+    // true = 这是**我自己的设备**（笔记本/台式，跟着人走），写进 member.devices；
+    // false = 我贡献的**服务器**（实验室基建），写进 machines。
+    // 只有本人分得清这个区别，所以由他在共享面板上勾 —— 责任为门。
+    as_device: Option<bool>,
 ) -> Result<Vec<store::Server>, String> {
     let _g = state.lock.lock().unwrap();
     let list = store::load(&state.dir);
@@ -909,9 +913,36 @@ fn share_server(
 
     // 「改授权」时保留已有条目里共享面板管不到的字段（advertises 等）。
     let prev = mf.machines.iter().find(|m| m.name == srv.name).cloned();
-    let sharing = sharing.unwrap_or_else(|| prev.as_ref().map(|p| p.sharing.clone()).unwrap_or_default());
-    let m = to_machine(srv, grants, sharing, prev.as_ref());
-    team::upsert_machine(&mut mf, m);
+    let prev_dev = mf.member.devices.iter().find(|d| team::device_node_name(&member, &d.name) == srv.name).cloned();
+    // 没显式说的话，沿用这台机上次的归类（改授权不该悄悄把设备变成服务器）。
+    let as_device = as_device.unwrap_or(prev_dev.is_some());
+    let sharing = sharing.unwrap_or_else(|| {
+        prev.as_ref().map(|p| p.sharing.clone())
+            .or_else(|| prev_dev.as_ref().map(|d| d.sharing.clone()))
+            .unwrap_or_default()
+    });
+    if as_device {
+        // 设备名 = store 里的机器名去掉 `<成员>-` 前缀（保证节点名回环一致）。
+        let dev_name = srv.name.strip_prefix(&format!("{member}-")).unwrap_or(&srv.name).to_string();
+        team::remove_machine(&mut mf, &srv.name); // 从服务器改判成设备时别留两份
+        team::upsert_device(&mut mf, team::Device {
+            name: if dev_name == member { String::new() } else { dev_name },
+            host: srv.host.clone(),
+            port: srv.port,
+            jump: srv.jump.clone(),
+            username: srv.username.clone(),
+            transport: srv.transport.clone(),
+            grants,
+            advertises: prev_dev.map(|d| d.advertises).unwrap_or_default(),
+            sharing,
+        });
+    } else {
+        if let Some(d) = &prev_dev {
+            team::remove_device(&mut mf, &d.name); // 反向改判同理
+        }
+        let m = to_machine(srv, grants, sharing, prev.as_ref());
+        team::upsert_machine(&mut mf, m);
+    }
     write_member_file(&team_path, &mf)?;
 
     let mut out = store::set_shared(&state.dir, &server, &team_src, true)?;
@@ -950,7 +981,13 @@ fn unshare_server(
     let mut mf = read_member_file(&member_path(&team_path, &member))
         .map_err(|_| format!("找不到你的成员档 members/{member}.yaml"))?;
     guard_member_owner(&mf, &verified_identity(&state.dir, &tn).map(|(l, _)| l))?;
+    // 服务器和设备两边都要清 —— 这台机可能是作为「我的设备」共享出去的。
     team::remove_machine(&mut mf, &server);
+    let dev_name = server.strip_prefix(&format!("{member}-")).unwrap_or(&server);
+    team::remove_device(&mut mf, dev_name);
+    if dev_name == member {
+        team::remove_device(&mut mf, ""); // 老格式:设备名为空、节点名即人名
+    }
     write_member_file(&team_path, &mf)?;
     store::set_shared(&state.dir, &server, &format!("team:{}", view.team), false)
 }

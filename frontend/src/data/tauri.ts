@@ -182,8 +182,13 @@ export const tauriData: DataSource = {
     server: string,
     grants: Record<string, number>,
     sharing?: import("./index").Sharing | null,
+    asDevice?: boolean,
   ) {
-    return invoke("share_server", { teamPath, member, server, grants, sharing: sharing ?? null }) as Promise<Server[]>;
+    return invoke("share_server", {
+      teamPath, member, server, grants,
+      sharing: sharing ?? null,
+      asDevice: asDevice ?? null,
+    }) as Promise<Server[]>;
   },
 
   unshareServer(teamPath: string, member: string, server: string) {

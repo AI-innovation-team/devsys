@@ -240,6 +240,8 @@ function LaunchCard({
   const [mem, setMem] = useState("");
   const [gpus, setGpus] = useState("");
   const [dsets, setDsets] = useState<{ host: string; as: string }[]>([]);
+  // 这台是「我自己的设备」还是「我贡献的服务器」？只有本人分得清 —— 由他勾。
+  const [asDevice, setAsDevice] = useState(false);
   const [busy, setBusy] = useState(false);
   const [shareErr, setShareErr] = useState("");
   const [syncNote, setSyncNote] = useState(""); // 同步给团队的结果
@@ -293,6 +295,7 @@ function LaunchCard({
         const sh = m.sharing;
         // 老 team.yaml 里的 rootless 就是现在的 container（两档已合一）
         if (sh?.isolation) setIso(sh.isolation === "account" ? "account" : "container");
+        setAsDevice(!!m.is_self);
         setCpus(sh?.limit?.cpus != null ? String(sh.limit.cpus) : "");
         setMem(sh?.limit?.mem ?? "");
         setGpus(sh?.limit?.gpus ?? "");
@@ -337,7 +340,7 @@ function LaunchCard({
   const doShare = async () => {
     setBusy(true); setShareErr(""); setSyncNote("");
     try {
-      await data.shareServer(teamPath, myName, s.name, grants, buildSharing());
+      await data.shareServer(teamPath, myName, s.name, grants, buildSharing(), asDevice);
       await reload();
       setEditing(false);
       setSharing(false);
@@ -454,6 +457,14 @@ function LaunchCard({
               </div>
               {/* ★「档」= 开多少权（上面的 grants）与「怎么关」= 隔离方式（下面）正交。
                   裸机账号给不了资源限额与目录隔离；一人一容器才能逐人兑现档位。 */}
+              <label className="dev-flag">
+                <input type="checkbox" checked={asDevice} onChange={(e) => setAsDevice(e.target.checked)} />
+                <span>
+                  这是<strong>我自己的设备</strong>（笔记本 / 台式，跟着我走）
+                  <em>不勾 = 我贡献的服务器（实验室基建）。设备会挂在织物图上「我」的旁边；一个人可以有多台。</em>
+                </span>
+              </label>
+
               <div className="share-t iso-t">
                 这些档位<strong>怎么兑现</strong>：
               </div>

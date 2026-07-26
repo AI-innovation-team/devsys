@@ -28,9 +28,17 @@ interface N {
 }
 interface E { a: string; b: string }
 
-// 一台算力节点在图里的目标 id:自身设备折进 owner 的人节点,服务器是独立机器节点。
+// 一台算力节点在图里的 id。**设备也是独立节点** —— 一个人可以有 mac/台式/工位机
+// 好几台，折进人节点就装不下了；改成挂在人旁边的一小簇（最内环 + 归属边）。
 function target(mc: Fabric["machines"][number]): string {
-  return mc.is_self ? `p:${mc.owner}` : `m:${mc.name}`;
+  return `m:${mc.name}`;
+}
+
+// 设备节点显示成「设备名」而不是「<成员>-<设备名>」—— 归属已经由边表达了。
+function shortName(mc: Fabric["machines"][number]): string {
+  if (!mc.is_self || !mc.owner) return mc.name;
+  const p = `${mc.owner}-`;
+  return mc.name.startsWith(p) ? mc.name.slice(p.length) : mc.name;
 }
 
 // IPv4 是否落在某 CIDR 内(判断哪些机在 subnet router 广播的网段后面)。
@@ -44,7 +52,8 @@ function ipInCidr(ip: string, cidr: string): boolean {
 }
 
 // 关系环半径(归一化)。me=0 固定圆心。
-const RING = { myMachine: 0.17, gate: 0.25, member: 0.31, farMachine: 0.36 };
+// device 最内 —— 设备跟着人走，视觉上就该贴着人。
+const RING = { device: 0.11, myMachine: 0.17, gate: 0.25, member: 0.31, farMachine: 0.36 };
 
 function build(view: Fabric, me?: string): { nodes: N[]; edges: E[] } {
   // 「我」= 身份(SSO login)或账号名对得上的成员节点。
@@ -53,9 +62,10 @@ function build(view: Fabric, me?: string): { nodes: N[]; edges: E[] } {
     !!meKey && (m.identity.toLowerCase() === meKey || m.name.toLowerCase() === meKey);
   const nodes: N[] = [];
   const edges: E[] = [];
-  const selfDev = new Map(view.machines.filter((mc) => mc.is_self).map((mc) => [mc.owner, mc]));
-  const servers = view.machines.filter((mc) => !mc.is_self);
-  const total = view.members.length + servers.length;
+  // 一个人可以有多台设备 —— 按 owner 分组，不再是「一人一台」。
+  const devsOf = (who: string) => view.machines.filter((mc) => mc.is_self && mc.owner === who);
+  const servers = view.machines.filter((mc) => !mc.is_self); // 贡献的服务器（基建）
+  const total = view.members.length + view.machines.length;
   let k = 0;
   const place = (ring: number) => {
     // 按目标环撒初始点 + 抖动,力导向再松弛成网 —— 少抖几百帧就稳。
@@ -85,22 +95,22 @@ function build(view: Fabric, me?: string): { nodes: N[]; edges: E[] } {
 
   // 人节点(含算力切面)
   for (const m of view.members) {
-    const dev = selfDev.get(m.name);
+    const devs = devsOf(m.name);
     const ownServers = servers.filter((mc) => mc.owner === m.name).map((mc) => mc.name);
     const canReach = view.machines
       .filter((mc) => mc.owner !== m.name && (mc.grants[m.role] ?? 0) > 0)
-      .map((mc) => `${mc.is_self ? mc.owner : mc.name}(档${mc.grants[m.role]})`);
+      .map((mc) => `${shortName(mc)}(档${mc.grants[m.role]})`);
     const lines: string[] = [];
-    if (dev) lines.push(`本机算力 ${dev.host} · ${reachersOf(dev).length ? "可进 " + reachersOf(dev).join("、") : "仅自己"}`);
+    if (devs.length) lines.push(`设备 ${devs.map((d) => `${shortName(d)}(${d.host})`).join("、")}`);
     if (ownServers.length) lines.push(`贡献服务器 ${ownServers.join("、")}`);
     if (canReach.length) lines.push(`可访问 ${canReach.join("、")}`);
-    if (!lines.length) lines.push(dev ? "只共享本机" : "仅消费(未共享算力)");
+    if (!lines.length) lines.push(devs.length ? "只共享自己的设备" : "仅消费(未共享算力)");
     const mine = isMe(m);
     const ring = mine ? 0 : RING.member;
     nodes.push({
-      id: `p:${m.name}`, name: m.name, kind: "person", compute: !!dev, gate: false, me: mine, ring,
+      id: `p:${m.name}`, name: m.name, kind: "person", compute: devs.length > 0, gate: false, me: mine, ring,
       ...(mine ? { x: 0.5, y: 0.5 } : place(ring)), vx: 0, vy: 0,
-      card: { title: mine ? `${m.name}（我）` : m.name, type: dev ? `人 · ${m.role} · 算力` : `人 · ${m.role}`, lines },
+      card: { title: mine ? `${m.name}（我）` : m.name, type: devs.length ? `人 · ${m.role} · ${devs.length} 台设备` : `人 · ${m.role}`, lines },
     });
   }
   // 没匹配到成员的「我」(纯本地/未入团队):也造一个中心节点 —— 图永远以我为中心。
@@ -113,8 +123,8 @@ function build(view: Fabric, me?: string): { nodes: N[]; edges: E[] } {
     });
   }
 
-  // 服务器节点(独立算力,非本人)
-  for (const mc of servers) {
+  // 算力节点:**贡献的服务器 + 每个人的每一台设备**（设备不再折进人节点）
+  for (const mc of view.machines) {
     const reachers = reachersOf(mc);
     const gate = isGate(mc);
     const via = gateOf(mc);
@@ -127,16 +137,16 @@ function build(view: Fabric, me?: string): { nodes: N[]; edges: E[] } {
       lines.push("跳板 · 别的机经它进内网");
     }
     const isMine = mc.owner ? mc.owner === meName : true; // 无主 = 我的本地节点
-    lines.push(mc.owner ? `属于 ${mc.owner}` : "我的本地节点");
+    lines.push(mc.is_self ? `${mc.owner} 的设备` : mc.owner ? `属于 ${mc.owner}` : "我的本地节点");
     if (via) lines.push(`经门 ${via} 可达`);
     if (mc.owner) lines.push(reachers.length ? `可进 ${reachers.join("、")}` : "无人可进");
     // 可连性:点了能不能真开终端 —— 说清楚,别让点击静默失败。
     if (!mc.connectable) lines.push("⚠ 未在本地拓扑");
     else if (!mc.has_secret) lines.push("⚠ 未配凭据");
     else lines.push("点击打开终端");
-    const ring = gate ? RING.gate : isMine ? RING.myMachine : RING.farMachine;
-    nodes.push({ id: `m:${mc.name}`, name: mc.name, kind: "machine", compute: true, gate, me: false, ring, ...place(ring), vx: 0, vy: 0, card: { title: disp(mc.name), type: gate ? `门 · ${mc.host}` : `机器 · ${mc.host}`, lines } });
-    if (mc.owner) edges.push({ a: `p:${mc.owner}`, b: `m:${mc.name}` }); // 归属(自身设备无此边,已折进人)
+    const ring = mc.is_self ? RING.device : gate ? RING.gate : isMine ? RING.myMachine : RING.farMachine;
+    nodes.push({ id: `m:${mc.name}`, name: shortName(mc), kind: "machine", compute: true, gate, me: false, ring, ...place(ring), vx: 0, vy: 0, card: { title: disp(shortName(mc)), type: gate ? `门 · ${mc.host}` : mc.is_self ? `设备 · ${mc.host}` : `机器 · ${mc.host}`, lines } });
+    if (mc.owner) edges.push({ a: `p:${mc.owner}`, b: `m:${mc.name}` }); // 归属边（设备靠它贴着人）
     else if (meId) edges.push({ a: meId, b: `m:${mc.name}` });           // 我的本地机 → 连到我
   }
   // 机器 → 它的门(可达路径边:这台机经哪道门进来)。
