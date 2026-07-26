@@ -21,6 +21,19 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      # ★ 这一步不能省：tauri.conf.json 把 ../tsnet-helper/tsnet-helper 声明成 resource，
+      # 而 Tauri 的 build script 会校验 resource 存在 —— **连 `cargo test` 都过不去**。
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tsnet-helper/go.mod
+          cache-dependency-path: tsnet-helper/go.sum
+      - name: 构建 tsnet-helper
+        working-directory: tsnet-helper
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          GOOS=linux GOARCH=amd64 go build -trimpath -o tsnet-helper .
+          chmod +x tsnet-helper
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
