@@ -12,9 +12,10 @@ interface Props {
   reload: () => Promise<void> | void;
   theme: Theme;
   setTheme: (t: Theme) => void;
+  teamPath?: string; // 团队 team.yaml —— 面板据此拿到团队控制面地址
 }
 
-export function Settings({ me, reload, theme, setTheme }: Props) {
+export function Settings({ me, reload, theme, setTheme, teamPath }: Props) {
   const servers = me?.servers || [];
   return (
     <div className="wrap">
@@ -25,7 +26,10 @@ export function Settings({ me, reload, theme, setTheme }: Props) {
       {isTauri && (
         <section className="set-sec">
           <div className="set-h"><h2>网络织物</h2></div>
-          <TailnetPanel />
+          {/* 必须把 teamPath 传下去：不传 → 面板不知道团队控制面 →
+              connect 会连**官方 Tailscale** 而不是团队的 Headscale，
+              而且不会给 helper 设 NO_PROXY，有系统代理时会一直卡在「接入中」。 */}
+          <TailnetPanel teamPath={teamPath} />
         </section>
       )}
 

@@ -249,7 +249,7 @@ export function App() {
             onReauth={logout}
           />
         )}
-        {view === "settings" && <Settings me={me} reload={reload} theme={theme} setTheme={setTheme} />}
+        {view === "settings" && <Settings me={me} reload={reload} theme={theme} setTheme={setTheme} teamPath={teamPath} />}
         {view === "admin" && me?.is_admin && <Admin me={me} />}
         {view === "docs" && (
           <Docs

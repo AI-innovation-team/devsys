@@ -202,6 +202,10 @@ export const tauriData: DataSource = {
     return invoke("tailnet_status") as Promise<import("./index").TailnetStatus>;
   },
 
+  tailnetLog() {
+    return invoke("tailnet_log") as Promise<string[]>;
+  },
+
   async tailnetUp(authkey: string, ingress: boolean, control?: string): Promise<void> {
     await invoke("tailnet_up", { authkey: authkey || null, ingress, control: control || null });
   },

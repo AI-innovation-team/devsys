@@ -8,8 +8,13 @@ import { Icon } from "../icons";
 // 零系统依赖：把一个 tailnet 节点嵌进 app —— 不装系统 Tailscale。
 //   出站：app 内的 SSH 走它经 tailnet 连队友内网机。
 //   入站（贡献侧）：把本机 :22 挂上 tailnet，让队友连进来 —— 但 app 得开着。
-export function TailnetPanel({ teamTailnet }: { teamTailnet?: string }) {
+export function TailnetPanel({ teamTailnet, teamPath }: { teamTailnet?: string; teamPath?: string }) {
   const [st, setSt] = useState<TailnetStatus>({ state: "stopped" });
+  // 调用方没直接给团队 tailnet 时，自己按 teamPath 去读 —— 少一个「忘了传」的坑。
+  const [fetched, setFetched] = useState<string>("");
+  const [log, setLog] = useState<string[]>([]);
+  const [showLog, setShowLog] = useState(false);
+  const [slow, setSlow] = useState(false);
   const [authkey, setAuthkey] = useState("");
   const [ingress, setIngress] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -27,7 +32,8 @@ export function TailnetPanel({ teamTailnet }: { teamTailnet?: string }) {
 
   // 团队声明的 tailnet 若是 URL(http/https)= 自建 Headscale 控制面,接入时指向它;
   // 否则(官方 Tailscale 的 tailnet 名)control 留空,连官方网。
-  const control = teamTailnet && /^https?:\/\//i.test(teamTailnet) ? teamTailnet : "";
+  const teamNet = teamTailnet || fetched;
+  const control = teamNet && /^https?:\/\//i.test(teamNet) ? teamNet : "";
   // OIDC 入网:控制面(Headscale+Dex)要求登录时,tsnet 报 auth_url →
   // **自动弹浏览器**,成员只需在浏览器点一下 GitHub 授权即入网(零配置、身份到人)。
   const opened = useRef("");
@@ -38,6 +44,24 @@ export function TailnetPanel({ teamTailnet }: { teamTailnet?: string }) {
       data.openUrl(u).catch(() => {}); // 弹不出也无妨,下方仍给可点链接
     }
   }, [st.auth_url]);
+
+  useEffect(() => {
+    if (!isTauri || teamTailnet || !teamPath) return;
+    data.readTeamView(teamPath).then((v) => setFetched(v.tailnet || "")).catch(() => {});
+  }, [teamPath, teamTailnet]);
+
+  // 接入超过 20 秒还没成 = 多半不是「慢」，是卡住了。把 helper 日志摊开，
+  // 别让人对着转圈干等（这正是「一直在连接」那次我们两眼一抹黑的原因）。
+  useEffect(() => {
+    if (st.state !== "starting") { setSlow(false); return; }
+    const t = setTimeout(() => {
+      setSlow(true);
+      data.tailnetLog().then(setLog).catch(() => {});
+    }, 20000);
+    return () => clearTimeout(t);
+  }, [st.state]);
+
+  const refreshLog = () => { data.tailnetLog().then(setLog).catch(() => {}); setShowLog(true); };
 
   const up = async () => {
     setBusy(true); setErr("");
@@ -94,6 +118,29 @@ export function TailnetPanel({ teamTailnet }: { teamTailnet?: string }) {
       )}
 
       {err && <div className="import-err" style={{ marginTop: 12 }}>{err}</div>}
+      {/* helper 自己报的错，以前根本没显示过 */}
+      {st.error && <div className="import-err" style={{ marginTop: 12 }}>{st.error}</div>}
+      {/* 我们替用户读日志得出的结论 —— 比原始日志有用得多 */}
+      {st.hint && (
+        <div className="import-err" style={{ marginTop: 12 }}>
+          <strong>接不进去：</strong>{st.hint}
+        </div>
+      )}
+      {slow && !st.hint && (
+        <div className="acl-note" style={{ marginTop: 12 }}>
+          <Icon name="alert" />
+          <span>
+            接入已经超过 20 秒还没成 —— 多半是卡住了，不是慢。
+            {!control && <> 而且这次<strong>没带团队控制面地址</strong>，连的是官方 Tailscale。</>}
+            <button className="org-authlink" onClick={refreshLog}>看 helper 日志 →</button>
+          </span>
+        </div>
+      )}
+      {showLog && (
+        <pre className="acl-json" style={{ marginTop: 12 }}>
+          {log.length ? log.join("\n") : "（helper 还没输出任何日志）"}
+        </pre>
+      )}
 
       {/* 需要浏览器登录：给出 auth URL */}
       {needsLogin && st.auth_url && (

@@ -132,6 +132,7 @@ export interface DataSource {
 
   // ── 内建 tailnet（tsnet sidecar）：零系统依赖的 tailnet 节点 ──
   tailnetStatus(): Promise<TailnetStatus>;
+  tailnetLog(): Promise<string[]>;   // sidecar 最近日志（诊断接入卡住）
   // control 空 = 官方 Tailscale;填团队 Headscale URL = 接入团队自持网。
   tailnetUp(authkey: string, ingress: boolean, control?: string): Promise<void>;
   tailnetDown(): Promise<void>;
@@ -170,6 +171,7 @@ export interface TailnetStatus {
   auth_url?: string; // 需要浏览器登录时的 URL（没填 authkey 时）
   socks?: string;
   ingress?: boolean;
+  hint?: string;    // 我们替用户读 helper 日志得出的人话结论（卡住时最有用）
   login?: string;   // 验证过的 SSO 登录名
   display?: string;
   error?: string;

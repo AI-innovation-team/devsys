@@ -1356,6 +1356,12 @@ fn tailnet_status(tn: State<Arc<tailnet::Tailnet>>) -> tailnet::TailnetStatus {
     tn.status()
 }
 
+// sidecar 最近的日志（诊断接入失败用）。
+#[tauri::command]
+fn tailnet_log(tn: State<Arc<tailnet::Tailnet>>) -> Vec<String> {
+    tn.log()
+}
+
 #[tauri::command]
 fn tailnet_up(
     app: AppHandle,
@@ -1731,6 +1737,7 @@ pub fn run() {
             provision_apply,
             probe_host,
             tailnet_status,
+            tailnet_log,
             tailnet_up,
             tailnet_down,
             tailnet_identity,

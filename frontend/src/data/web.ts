@@ -54,6 +54,7 @@ export const webData: DataSource = {
   pickTeamSavePath: () => unsupported(),
   detectSelf: () => unsupported(),
   tailnetStatus: async () => ({ state: "stopped" }),
+  tailnetLog: async () => [],
   tailnetUp: async () => {},
   tailnetDown: () => unsupported(),
   tailnetIdentity: async () => ({ login: "", display: "", name: "" }),
