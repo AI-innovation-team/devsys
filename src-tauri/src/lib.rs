@@ -1299,6 +1299,27 @@ async fn probe_host(
 // 解析 helper 二进制路径：开发期用仓库里编好的，发布期在资源目录。
 fn helper_path(app: &AppHandle) -> Result<String, String> {
     let name = "tsnet-helper";
+    // Windows：打进包里的是无扩展名的 `tsnet-helper`（保持三平台同一个资源声明），
+    // 但 Windows 要 `.exe` 才好起进程 —— 首次运行复制一份到可写的 app 数据目录。
+    // 不能就地改名：Program Files 下的资源目录是只读的。
+    #[cfg(windows)]
+    if let (Ok(res), Ok(data)) = (app.path().resource_dir(), app.path().app_local_data_dir()) {
+        let src = res.join(name);
+        if src.exists() {
+            let dst = data.join("tsnet-helper.exe");
+            let need = std::fs::metadata(&dst)
+                .ok()
+                .zip(std::fs::metadata(&src).ok())
+                .map(|(a, b)| a.len() != b.len())
+                .unwrap_or(true);
+            if need {
+                let _ = std::fs::create_dir_all(&data);
+                std::fs::copy(&src, &dst).map_err(|e| format!("复制 tsnet-helper 失败: {e}"))?;
+            }
+            return Ok(dst.to_string_lossy().to_string());
+        }
+    }
+
     // 发布：资源目录
     if let Ok(res) = app.path().resource_dir() {
         let p = res.join(name);

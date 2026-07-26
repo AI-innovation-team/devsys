@@ -76,6 +76,10 @@ jobs:
             label: Linux x86_64
             args: ""
             rust-targets: ""
+          - os: windows-latest
+            label: Windows x86_64
+            args: ""
+            rust-targets: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -106,6 +110,17 @@ jobs:
         run: |
           GOOS=linux GOARCH=amd64 go build -trimpath -o tsnet-helper .
           chmod +x tsnet-helper
+
+      # 文件名保持无扩展名（三平台共用同一条 resources 声明）；
+      # 运行时 Rust 会把它复制成 app 数据目录里的 tsnet-helper.exe 再起进程。
+      # shell: bash —— Windows runner 默认是 PowerShell，`GOOS=... go build` 那种写法在它那儿不成立。
+      - name: 构建 tsnet-helper（Windows）
+        if: runner.os == 'Windows'
+        working-directory: tsnet-helper
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: GOOS=windows GOARCH=amd64 go build -trimpath -o tsnet-helper .
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -144,18 +159,29 @@ jobs:
           # ——整个 workflow 会在校验阶段就被 GitHub 否掉（连 job 都不建）。
           releaseName: DevSys ${{ github.ref_type == 'tag' && github.ref_name || format('dev build {0}', github.run_number) }}
           releaseBody: |
-            两个包：**macOS 通用**（Apple Silicon + Intel）与 **Linux x86_64**（.deb / .AppImage）。
+            三个平台：**macOS 通用**（Apple Silicon + Intel）、**Linux x86_64**、**Windows x86_64**。
 
-            ### macOS 首次打开
-            包**没有 Apple 签名**（我们还没有 Developer ID），Gatekeeper 会拦。装完执行一次：
+            > 都**没有代码签名**（还没买 Apple / Windows 的证书），所以三个系统都会拦一下，下面各有说明。
+
+            ### macOS
+            装完执行一次，否则 Gatekeeper 会说「已损坏」：
             ```
             xattr -dr com.apple.quarantine /Applications/DevSys.app
             ```
-            然后正常打开即可。首次启动会问一次系统密码 —— 那是钥匙串在确认「这个 app 可以读它自己的密钥」，
-            点**始终允许**就不会再问（升级到新版本会再问一次，因为签名标识变了）。
+            首次启动会问一次系统密码 —— 那是钥匙串在确认「这个 app 可以读它自己的密钥」，
+            点**始终允许**就不再问（升级新版本会再问一次，因为签名标识变了）。
 
             ### Linux
-            `.deb` 直接 `sudo dpkg -i`；`.AppImage` `chmod +x` 后直接跑。
+            `.deb` 用 `sudo dpkg -i`（缺依赖再 `sudo apt -f install`）；`.AppImage` `chmod +x` 后直接跑。
+
+            ### Windows
+            `.exe`（NSIS 安装包）或 `.msi` 都行。SmartScreen 会弹「已保护你的电脑」——
+            点**更多信息 → 仍要运行**。需要 WebView2，Win11 自带，Win10 安装包会自动装。
+
+            ### 已知边界
+            - 团队配置同步要本机有 `git`（Windows 上需自行安装 Git for Windows）。
+            - 「一人一容器」下发到 **Windows 被共享机**这条路**没实测过**（命令已做成 OS 中立，
+              但我们没有 Windows 机器验）。给别人机器下发时优先用 Linux / macOS。
           releaseDraft: true
           prerelease: ${{ github.ref_type != 'tag' }}
           args: ${{ matrix.args }}
