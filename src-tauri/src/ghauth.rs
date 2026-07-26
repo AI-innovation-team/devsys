@@ -23,10 +23,19 @@ const SCOPE: &str = "read:org repo";
 // client_id 非机密 —— device flow 专为「存不住 secret 的公共客户端」设计，公开分发是预期用法
 // （GitHub 官方 gh CLI 即如此）。分发构建时 `DEVSYS_GH_CLIENT_ID=xxx tauri build` 注入即可，
 // 或直接把下面常量填成你的值。运行时 env / 文件仍可覆盖（开发期方便切换）。
-const BAKED_CLIENT_ID: &str = match option_env!("DEVSYS_GH_CLIENT_ID") {
-    Some(v) => v,
-    None => "Ov23lidtpuzaZa6jGU9q", // AIT.dev 团队 OAuth App（公开值，非机密）
-};
+const FALLBACK_CLIENT_ID: &str = "Ov23lidtpuzaZa6jGU9q"; // AIT.dev 团队 OAuth App（公开值，非机密）
+
+// ★ **构建期把这个变量设成空串，等同于没设**。
+// 踩过的坑：release workflow 里写了 `DEVSYS_GH_CLIENT_ID: ${{ vars.XXX }}`，
+// 而仓库变量没配 → 展开成空串 → 变量确实被设了 → `option_env!` 返回 `Some("")`
+// → 烤进二进制的 client_id 是空的 → **分发版一打开就说「还没配 OAuth App」，用户根本没法登录**。
+// dev 构建不设这个变量，所以本地永远发现不了 —— 只有发行版会中招。
+fn baked_client_id() -> &'static str {
+    match option_env!("DEVSYS_GH_CLIENT_ID") {
+        Some(v) if !v.trim().is_empty() => v.trim(),
+        _ => FALLBACK_CLIENT_ID,
+    }
+}
 
 fn ua() -> &'static str {
     "devsys-app"
@@ -80,7 +89,7 @@ pub fn client_id(dir: &Path) -> String {
             return s;
         }
     }
-    BAKED_CLIENT_ID.trim().to_string()
+    baked_client_id().to_string()
 }
 
 // 会话读/写。
@@ -292,4 +301,33 @@ pub fn set_org(dir: &Path, org: &str) -> Result<(), String> {
 pub fn logout(dir: &Path) {
     keychain::del(dir, TOKEN_ACCOUNT);
     let _ = std::fs::remove_file(dir.join(SESSION_FILE));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ★ 空的 client_id = 分发版一打开就「未配置」、用户根本没法登录，
+    // 而 dev 构建永远复现不了（它不设这个编译期变量）。所以必须有这条守着。
+    #[test]
+    fn baked_client_id_is_never_empty() {
+        assert!(
+            !baked_client_id().is_empty(),
+            "烤进去的 client_id 是空的 —— 构建时 DEVSYS_GH_CLIENT_ID 被设成了空串？\
+             空串必须当作「没设」，回落到 FALLBACK_CLIENT_ID。"
+        );
+    }
+
+    // 运行时覆盖链:env → app 目录文件 → 烤进去的默认值。任一环节都不该产出空值。
+    #[test]
+    fn client_id_falls_back_when_nothing_configured() {
+        let d = std::env::temp_dir().join("devsys-ghauth-test");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        // 不碰进程 env（并发测试会互相干扰），只验「什么都没配」时的兜底
+        if std::env::var("DEVSYS_GH_CLIENT_ID").is_err() {
+            assert_eq!(client_id(&d), FALLBACK_CLIENT_ID);
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

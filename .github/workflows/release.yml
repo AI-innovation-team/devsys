@@ -151,7 +151,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # OAuth App 的 client_id 是 device flow 的**公开**值（不是机密）。
-          # 二进制里已烤了默认值；这里允许换成别的 App。
+          # 仓库变量没配时这里会展开成**空串** —— ghauth.rs 已把空串当作「没设」并回落到
+          # 烤进去的默认值（曾因此发出过一版一打开就说「未配置」、根本没法登录的包）。
           DEVSYS_GH_CLIENT_ID: ${{ vars.DEVSYS_GH_CLIENT_ID }}
         with:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}-dev', github.run_number) }}
