@@ -1,7 +1,7 @@
 {
   "name": "devsys-desktop",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DevSys 桌面客户端（Tauri v2）。前端复用 frontend/，Rust 在 src-tauri/。",
   "scripts": {
     "tauri": "tauri",
